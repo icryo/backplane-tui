@@ -24,6 +24,15 @@ pub enum ViewMode {
     Info,
 }
 
+/// Container list view modes (horizontal scroll)
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum ListViewMode {
+    #[default]
+    Stats,    // Name, Type, Port, CPU bar, MEM bar
+    Network,  // Name, ↓RX rate, ↑TX rate, Total RX, Total TX
+    Details,  // Name, Image, Container ID, Uptime
+}
+
 /// Active modal state
 #[derive(Debug, Clone)]
 pub enum ModalState {
@@ -39,6 +48,7 @@ pub struct App {
 
     // View state
     pub view_mode: ViewMode,
+    pub list_view_mode: ListViewMode,
     pub modal: ModalState,
     pub should_quit: bool,
 
@@ -90,6 +100,7 @@ impl App {
         let mut app = Self {
             docker,
             view_mode: ViewMode::List,
+            list_view_mode: ListViewMode::Stats,
             modal: ModalState::None,
             should_quit: false,
             containers: Vec::new(),
@@ -475,6 +486,28 @@ impl App {
                 self.tick().await?;
             }
 
+            Action::Left => {
+                // Cycle list view mode backwards
+                if self.view_mode == ViewMode::List {
+                    self.list_view_mode = match self.list_view_mode {
+                        ListViewMode::Stats => ListViewMode::Details,
+                        ListViewMode::Network => ListViewMode::Stats,
+                        ListViewMode::Details => ListViewMode::Network,
+                    };
+                }
+            }
+
+            Action::Right => {
+                // Cycle list view mode forwards
+                if self.view_mode == ViewMode::List {
+                    self.list_view_mode = match self.list_view_mode {
+                        ListViewMode::Stats => ListViewMode::Network,
+                        ListViewMode::Network => ListViewMode::Details,
+                        ListViewMode::Details => ListViewMode::Stats,
+                    };
+                }
+            }
+
             _ => {}
         }
 
@@ -514,7 +547,7 @@ impl App {
 
                 // Container list (filtered) - full width with inline stats
                 let filtered: Vec<ContainerInfo> = self.filtered_containers().into_iter().cloned().collect();
-                self.container_list.render(frame, list_area, &filtered);
+                self.container_list.render(frame, list_area, &filtered, self.list_view_mode);
 
                 // Filter bar
                 if let Some(filter_rect) = filter_area {

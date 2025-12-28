@@ -19,6 +19,7 @@ impl StatusBar {
     pub fn list_keybindings() -> Vec<KeyBinding> {
         vec![
             KeyBinding { key: "↑↓", desc: "nav" },
+            KeyBinding { key: "←→", desc: "view" },
             KeyBinding { key: "/", desc: "filter" },
             KeyBinding { key: "i", desc: "info" },
             KeyBinding { key: "e", desc: "exec" },

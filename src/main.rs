@@ -282,6 +282,8 @@ fn handle_list_key(app: &App, key: event::KeyEvent) -> Action {
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => Action::Down,
         KeyCode::Char('k') | KeyCode::Up => Action::Up,
+        KeyCode::Left | KeyCode::Char('h') => Action::Left,
+        KeyCode::Right => Action::Right,
         KeyCode::Char('g') => Action::Top,
         KeyCode::Char('G') => Action::Bottom,
 
