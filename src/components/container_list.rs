@@ -93,17 +93,18 @@ impl ContainerList {
             })
             .collect();
 
-        let view_label = match view_mode {
-            ListViewMode::Stats => "Stats",
-            ListViewMode::Network => "Network",
-            ListViewMode::Details => "Details",
-        };
-        let title = format!(" Containers ({}) │ {} ←→ ", containers.len(), view_label);
+        // Build tab indicator
+        let tabs = self.build_tabs(view_mode);
+        let title = Line::from(vec![
+            Span::styled(format!(" Containers ({}) ", containers.len()), title_style(self.focused)),
+            Span::styled("│ ", Style::default().fg(Theme::BORDER)),
+            tabs.0, tabs.1, tabs.2,
+        ]);
+
         let list = List::new(items)
             .block(
                 Block::default()
                     .title(title)
-                    .title_style(title_style(self.focused))
                     .borders(Borders::ALL)
                     .border_style(border_style(self.focused)),
             )
@@ -111,6 +112,27 @@ impl ContainerList {
             .highlight_symbol("▶");
 
         frame.render_stateful_widget(list, area, &mut self.state);
+    }
+
+    /// Build styled tab spans for the view mode indicator
+    fn build_tabs(&self, view_mode: ListViewMode) -> (Span<'static>, Span<'static>, Span<'static>) {
+        let active_style = Style::default()
+            .fg(Theme::BG_DARK)
+            .bg(Theme::MAUVE)
+            .add_modifier(Modifier::BOLD);
+        let inactive_style = Style::default().fg(Theme::FG_DARK);
+
+        let (stats_style, network_style, details_style) = match view_mode {
+            ListViewMode::Stats => (active_style, inactive_style, inactive_style),
+            ListViewMode::Network => (inactive_style, active_style, inactive_style),
+            ListViewMode::Details => (inactive_style, inactive_style, active_style),
+        };
+
+        (
+            Span::styled(" Stats ", stats_style),
+            Span::styled(" Network ", network_style),
+            Span::styled(" Details ", details_style),
+        )
     }
 
     /// Render Stats view line: Name, Type, Port, CPU bar, MEM bar

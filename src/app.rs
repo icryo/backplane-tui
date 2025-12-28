@@ -51,6 +51,7 @@ pub struct App {
     pub list_view_mode: ListViewMode,
     pub modal: ModalState,
     pub should_quit: bool,
+    pub loading: bool,
 
     // Container data (auto-discovered)
     pub containers: Vec<ContainerInfo>,
@@ -103,6 +104,7 @@ impl App {
             list_view_mode: ListViewMode::Stats,
             modal: ModalState::None,
             should_quit: false,
+            loading: false,
             containers: Vec::new(),
             filtered_indices: Vec::new(),
             logs: Vec::new(),
@@ -161,6 +163,7 @@ impl App {
     }
 
     pub async fn refresh_containers(&mut self) -> Result<()> {
+        self.loading = true;
         self.last_container_refresh = Instant::now();
 
         let mut containers = self.docker.list_containers().await?;
@@ -178,6 +181,7 @@ impl App {
 
         self.containers = containers;
         self.update_filtered_indices();
+        self.loading = false;
 
         Ok(())
     }
@@ -526,7 +530,7 @@ impl App {
         let (header_area, body, footer) = main_layout(frame.area());
 
         // Header with system stats
-        Header::render(frame, header_area, &self.system_stats, self.system_stats.vram_percent);
+        Header::render(frame, header_area, &self.system_stats, self.system_stats.vram_percent, self.loading);
 
         // Main content area based on view mode
         match self.view_mode {

@@ -10,14 +10,23 @@ use crate::ui::Theme;
 pub struct Header;
 
 impl Header {
-    pub fn render(frame: &mut Frame, area: Rect, stats: &SystemStats, vram: Option<f32>) {
+    pub fn render(frame: &mut Frame, area: Rect, stats: &SystemStats, vram: Option<f32>, loading: bool) {
         use crate::ui::layout::header_layout;
 
         let (title_area, stats_area) = header_layout(area);
 
-        // Title
-        let title = Paragraph::new(" Backplane TUI ")
-            .style(Style::default().fg(Theme::BLUE).add_modifier(Modifier::BOLD));
+        // Title with optional loading indicator
+        let title_text = if loading {
+            " Backplane TUI  ⟳"
+        } else {
+            " Backplane TUI "
+        };
+        let title_style = if loading {
+            Style::default().fg(Theme::YELLOW).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Theme::BLUE).add_modifier(Modifier::BOLD)
+        };
+        let title = Paragraph::new(title_text).style(title_style);
         frame.render_widget(title, title_area);
 
         // System stats with colors
