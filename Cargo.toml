@@ -1,0 +1,37 @@
+[package]
+name = "backplane-tui"
+version = "0.1.0"
+edition = "2021"
+authors = ["221B Lab"]
+description = "Docker container management TUI"
+
+[dependencies]
+# TUI Framework
+ratatui = "0.29"
+crossterm = "0.28"
+
+# Async Runtime
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+futures-util = "0.3"
+
+# Docker Integration
+bollard = "0.18"
+
+# Configuration & Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+
+# System Information
+sysinfo = "0.32"
+
+# Error Handling
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Time handling
+chrono = "0.4"
+
+# Logging (optional, for debugging)
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

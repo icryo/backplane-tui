@@ -1,0 +1,566 @@
+use anyhow::Result;
+use sysinfo::{Disks, System};
+use std::time::{Duration, Instant};
+
+use crate::action::Action;
+use crate::components::{
+    ConfirmModal, ContainerList, CreateContainerForm, CreateModal,
+    CreateMode, ExecModal, FilterBar, Header, HelpModal, InfoModal, LogsView, StatsHistory, StatusBar,
+};
+use crate::components::confirm_modal::ConfirmAction;
+use crate::docker::client::DockerClient;
+use crate::docker::logs::get_container_logs;
+use crate::docker::stats::get_container_stats;
+use crate::models::{ContainerInfo, SystemStats};
+
+/// Current view mode
+#[derive(Debug, Clone, PartialEq)]
+pub enum ViewMode {
+    List,
+    Logs,
+    Create,
+    Filter,
+    Exec,
+    Info,
+}
+
+/// Active modal state
+#[derive(Debug, Clone)]
+pub enum ModalState {
+    None,
+    Help,
+    Confirm(ConfirmAction),
+}
+
+/// Main application state
+pub struct App {
+    // Docker client
+    docker: DockerClient,
+
+    // View state
+    pub view_mode: ViewMode,
+    pub modal: ModalState,
+    pub should_quit: bool,
+
+    // Container data (auto-discovered)
+    pub containers: Vec<ContainerInfo>,
+    pub filtered_indices: Vec<usize>,
+
+    // Logs data
+    pub logs: Vec<String>,
+    pub logs_container: String,
+
+    // Create container form
+    pub create_form: CreateContainerForm,
+
+    // Filter
+    pub filter: FilterBar,
+
+    // Exec modal
+    pub exec_modal: Option<ExecModal>,
+
+    // Stats history for sparklines
+    pub stats_history: StatsHistory,
+
+    // System stats
+    pub system_stats: SystemStats,
+
+    // Components
+    pub container_list: ContainerList,
+    pub logs_view: LogsView,
+
+    // System info
+    sys: System,
+    disks: Disks,
+
+    // Refresh timing
+    last_container_refresh: Instant,
+    last_stats_refresh: Instant,
+    container_refresh_interval: Duration,
+    stats_refresh_interval: Duration,
+}
+
+impl App {
+    pub async fn new() -> Result<Self> {
+        let docker = DockerClient::connect()?;
+        let mut sys = System::new_all();
+        sys.refresh_all();
+        let disks = Disks::new_with_refreshed_list();
+
+        let mut app = Self {
+            docker,
+            view_mode: ViewMode::List,
+            modal: ModalState::None,
+            should_quit: false,
+            containers: Vec::new(),
+            filtered_indices: Vec::new(),
+            logs: Vec::new(),
+            logs_container: String::new(),
+            create_form: CreateContainerForm::new(),
+            filter: FilterBar::new(),
+            exec_modal: None,
+            stats_history: StatsHistory::new(30), // Keep 30 samples
+            system_stats: SystemStats::default(),
+            container_list: ContainerList::new(),
+            logs_view: LogsView::new(),
+            sys,
+            disks,
+            last_container_refresh: Instant::now() - Duration::from_secs(10),
+            last_stats_refresh: Instant::now() - Duration::from_secs(10),
+            container_refresh_interval: Duration::from_secs(3),
+            stats_refresh_interval: Duration::from_secs(2),
+        };
+
+        app.refresh_containers().await?;
+        app.refresh_system_stats();
+        app.update_filtered_indices();
+
+        Ok(app)
+    }
+
+    /// Update filtered indices based on current filter
+    pub fn update_filtered_indices(&mut self) {
+        self.filtered_indices = self.containers
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| self.filter.matches(&c.name))
+            .map(|(i, _)| i)
+            .collect();
+
+        // Adjust selection if needed
+        if !self.filtered_indices.is_empty() {
+            if let Some(selected) = self.container_list.selected() {
+                if selected >= self.filtered_indices.len() {
+                    self.container_list.state.select(Some(self.filtered_indices.len() - 1));
+                }
+            } else {
+                self.container_list.state.select(Some(0));
+            }
+        } else {
+            self.container_list.state.select(None);
+        }
+    }
+
+    /// Get filtered containers
+    pub fn filtered_containers(&self) -> Vec<&ContainerInfo> {
+        self.filtered_indices
+            .iter()
+            .filter_map(|&i| self.containers.get(i))
+            .collect()
+    }
+
+    pub async fn refresh_containers(&mut self) -> Result<()> {
+        self.last_container_refresh = Instant::now();
+
+        let mut containers = self.docker.list_containers().await?;
+
+        for container in &mut containers {
+            if container.status.is_running() {
+                if let Ok(stats) = get_container_stats(self.docker.inner(), &container.name).await {
+                    // Record history for sparklines
+                    self.stats_history.record_cpu(&container.name, stats.cpu_percent);
+                    self.stats_history.record_mem(&container.name, stats.memory_percent);
+                    container.stats = Some(stats);
+                }
+            }
+        }
+
+        self.containers = containers;
+        self.update_filtered_indices();
+
+        Ok(())
+    }
+
+    pub async fn refresh_container_stats(&mut self) -> Result<()> {
+        self.last_stats_refresh = Instant::now();
+
+        for container in &mut self.containers {
+            if container.status.is_running() {
+                if let Ok(stats) = get_container_stats(self.docker.inner(), &container.name).await {
+                    // Record history for sparklines
+                    self.stats_history.record_cpu(&container.name, stats.cpu_percent);
+                    self.stats_history.record_mem(&container.name, stats.memory_percent);
+                    container.stats = Some(stats);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn refresh_system_stats(&mut self) {
+        self.sys.refresh_cpu_all();
+        self.sys.refresh_memory();
+        self.disks.refresh();
+
+        let cpu_percent = self.sys.global_cpu_usage();
+        let memory_used = self.sys.used_memory() as f32;
+        let memory_total = self.sys.total_memory() as f32;
+        let memory_percent = if memory_total > 0.0 {
+            (memory_used / memory_total) * 100.0
+        } else {
+            0.0
+        };
+
+        let (disk_used, disk_total) = self.disks.iter()
+            .find(|d| d.mount_point().to_str() == Some("/"))
+            .map(|d| {
+                let total = d.total_space() as f32;
+                let available = d.available_space() as f32;
+                (total - available, total)
+            })
+            .unwrap_or((0.0, 1.0));
+
+        let disk_percent = (disk_used / disk_total) * 100.0;
+        let vram_percent = SystemStats::get_vram_percent();
+
+        self.system_stats = SystemStats {
+            cpu_percent,
+            memory_percent,
+            memory_used_gb: memory_used / 1024.0 / 1024.0 / 1024.0,
+            memory_total_gb: memory_total / 1024.0 / 1024.0 / 1024.0,
+            disk_percent,
+            disk_used_gb: disk_used / 1024.0 / 1024.0 / 1024.0,
+            disk_total_gb: disk_total / 1024.0 / 1024.0 / 1024.0,
+            vram_percent,
+        };
+    }
+
+    pub async fn load_logs(&mut self, container_name: &str) -> Result<()> {
+        self.logs_container = container_name.to_string();
+        self.logs = get_container_logs(self.docker.inner(), container_name, 500).await?;
+        self.logs_view = LogsView::new();
+        self.view_mode = ViewMode::Logs;
+        Ok(())
+    }
+
+    pub async fn open_create_form(&mut self) -> Result<()> {
+        self.create_form = CreateContainerForm::new();
+        self.create_form.available_images = self.docker.list_images().await.unwrap_or_default();
+        self.view_mode = ViewMode::Create;
+        Ok(())
+    }
+
+    pub fn open_exec_modal(&mut self, container_name: String) {
+        self.exec_modal = Some(ExecModal::new(container_name));
+        self.view_mode = ViewMode::Exec;
+    }
+
+    pub async fn create_container_from_form(&mut self) -> Result<()> {
+        let form = &self.create_form;
+
+        if !form.is_valid() {
+            return Ok(());
+        }
+
+        let port_host = form.port_host.parse::<u16>().ok();
+        let port_container = form.port_container.parse::<u16>().ok();
+
+        let env_vars: Vec<String> = if form.env_vars.is_empty() {
+            Vec::new()
+        } else {
+            form.env_vars.split(',').map(|s| s.trim().to_string()).collect()
+        };
+
+        let volumes: Vec<String> = if form.volumes.is_empty() {
+            Vec::new()
+        } else {
+            form.volumes.split(',').map(|s| s.trim().to_string()).collect()
+        };
+
+        let command = if form.command.is_empty() {
+            None
+        } else {
+            Some(form.command.clone())
+        };
+
+        self.docker
+            .create_container(
+                &form.name,
+                &form.image,
+                port_host,
+                port_container,
+                env_vars,
+                volumes,
+                command,
+            )
+            .await?;
+
+        self.view_mode = ViewMode::List;
+        self.refresh_containers().await?;
+
+        Ok(())
+    }
+
+    /// Get the currently selected container from filtered list
+    pub fn selected_container(&self) -> Option<&ContainerInfo> {
+        self.container_list
+            .selected()
+            .and_then(|i| self.filtered_indices.get(i))
+            .and_then(|&idx| self.containers.get(idx))
+    }
+
+    pub fn selected_container_name(&self) -> Option<String> {
+        self.selected_container().map(|c| c.name.clone())
+    }
+
+    pub fn should_refresh_containers(&self) -> bool {
+        self.last_container_refresh.elapsed() >= self.container_refresh_interval
+    }
+
+    pub fn should_refresh_stats(&self) -> bool {
+        self.last_stats_refresh.elapsed() >= self.stats_refresh_interval
+    }
+
+    pub async fn tick(&mut self) -> Result<()> {
+        if self.view_mode == ViewMode::Create || self.view_mode == ViewMode::Exec {
+            return Ok(());
+        }
+
+        if self.should_refresh_containers() {
+            self.refresh_containers().await?;
+        } else if self.should_refresh_stats() {
+            self.refresh_container_stats().await?;
+        }
+
+        self.refresh_system_stats();
+
+        if self.view_mode == ViewMode::Logs && !self.logs_container.is_empty() {
+            if let Ok(logs) = get_container_logs(self.docker.inner(), &self.logs_container, 500).await {
+                self.logs = logs;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub async fn handle_action(&mut self, action: Action) -> Result<()> {
+        match action {
+            Action::Quit => {
+                match self.view_mode {
+                    ViewMode::Create => self.view_mode = ViewMode::List,
+                    ViewMode::Filter => {
+                        self.filter.deactivate();
+                        self.update_filtered_indices();
+                        self.view_mode = ViewMode::List;
+                    }
+                    ViewMode::Exec => {
+                        self.exec_modal = None;
+                        self.view_mode = ViewMode::List;
+                    }
+                    _ => self.should_quit = true,
+                }
+            }
+
+            Action::Up => match self.view_mode {
+                ViewMode::List | ViewMode::Filter => {
+                    self.container_list.previous(self.filtered_indices.len())
+                }
+                ViewMode::Logs => self.logs_view.scroll_up(1),
+                ViewMode::Create => {
+                    if self.create_form.mode == CreateMode::ImageSelect {
+                        self.create_form.prev_image();
+                    } else {
+                        self.create_form.prev_field();
+                    }
+                }
+                ViewMode::Exec => {
+                    if let Some(ref mut modal) = self.exec_modal {
+                        modal.previous();
+                    }
+                }
+                ViewMode::Info => {} // No scrolling in info modal
+            },
+
+            Action::Down => match self.view_mode {
+                ViewMode::List | ViewMode::Filter => {
+                    self.container_list.next(self.filtered_indices.len())
+                }
+                ViewMode::Logs => self.logs_view.scroll_down(1, self.logs.len()),
+                ViewMode::Create => {
+                    if self.create_form.mode == CreateMode::ImageSelect {
+                        self.create_form.next_image();
+                    } else {
+                        self.create_form.next_field();
+                    }
+                }
+                ViewMode::Exec => {
+                    if let Some(ref mut modal) = self.exec_modal {
+                        modal.next();
+                    }
+                }
+                ViewMode::Info => {} // No scrolling in info modal
+            },
+
+            Action::Top => match self.view_mode {
+                ViewMode::List | ViewMode::Filter => self.container_list.top(),
+                ViewMode::Logs => self.logs_view.top(),
+                _ => {}
+            },
+
+            Action::Bottom => match self.view_mode {
+                ViewMode::List | ViewMode::Filter => {
+                    self.container_list.bottom(self.filtered_indices.len())
+                }
+                ViewMode::Logs => self.logs_view.bottom(self.logs.len()),
+                _ => {}
+            },
+
+            Action::ViewLogs(name) => {
+                self.load_logs(&name).await?;
+            }
+
+            Action::BackToList => {
+                self.view_mode = ViewMode::List;
+                self.logs.clear();
+                self.logs_container.clear();
+            }
+
+            Action::ShowHelp => {
+                self.modal = ModalState::Help;
+            }
+
+            Action::ShowConfirmDelete(name) => {
+                self.modal = ModalState::Confirm(ConfirmAction::Delete(name));
+            }
+
+            Action::ShowConfirmStop(name) => {
+                self.modal = ModalState::Confirm(ConfirmAction::Stop(name));
+            }
+
+            Action::CloseModal => {
+                self.modal = ModalState::None;
+            }
+
+            Action::ConfirmAction => {
+                if let ModalState::Confirm(ref confirm) = self.modal.clone() {
+                    match confirm {
+                        ConfirmAction::Delete(name) => {
+                            self.docker.remove_container(name).await?;
+                        }
+                        ConfirmAction::Stop(name) => {
+                            self.docker.stop_container(name).await?;
+                        }
+                    }
+                    self.modal = ModalState::None;
+                    self.refresh_containers().await?;
+                }
+            }
+
+            Action::StartContainer(name) => {
+                self.docker.start_container(&name).await?;
+                self.refresh_containers().await?;
+            }
+
+            Action::StopContainer(name) => {
+                self.docker.stop_container(&name).await?;
+                self.refresh_containers().await?;
+            }
+
+            Action::RestartContainer(name) => {
+                self.docker.restart_container(&name).await?;
+                self.refresh_containers().await?;
+            }
+
+            Action::DeleteContainer(name) => {
+                self.docker.remove_container(&name).await?;
+                self.refresh_containers().await?;
+            }
+
+            Action::Refresh => {
+                self.refresh_containers().await?;
+            }
+
+            Action::Tick => {
+                self.tick().await?;
+            }
+
+            _ => {}
+        }
+
+        Ok(())
+    }
+
+    pub fn render(&mut self, frame: &mut ratatui::Frame) {
+        use crate::ui::layout::main_layout;
+        use crate::ui::Theme;
+
+        // Set background color
+        let bg_block = ratatui::widgets::Block::default()
+            .style(ratatui::prelude::Style::default().bg(Theme::BG));
+        frame.render_widget(bg_block, frame.area());
+
+        let (header_area, body, footer) = main_layout(frame.area());
+
+        // Header with system stats
+        Header::render(frame, header_area, &self.system_stats, self.system_stats.vram_percent);
+
+        // Main content area based on view mode
+        match self.view_mode {
+            ViewMode::List | ViewMode::Filter | ViewMode::Create | ViewMode::Exec | ViewMode::Info => {
+                // Full-width container list (with optional filter bar at bottom)
+                let (list_area, filter_area) = if self.filter.active || self.view_mode == ViewMode::Filter {
+                    let chunks = ratatui::prelude::Layout::default()
+                        .direction(ratatui::prelude::Direction::Vertical)
+                        .constraints([
+                            ratatui::prelude::Constraint::Min(0),
+                            ratatui::prelude::Constraint::Length(3),
+                        ])
+                        .split(body);
+                    (chunks[0], Some(chunks[1]))
+                } else {
+                    (body, None)
+                };
+
+                // Container list (filtered) - full width with inline stats
+                let filtered: Vec<ContainerInfo> = self.filtered_containers().into_iter().cloned().collect();
+                self.container_list.render(frame, list_area, &filtered);
+
+                // Filter bar
+                if let Some(filter_rect) = filter_area {
+                    self.filter.render(frame, filter_rect, self.filtered_indices.len(), self.containers.len());
+                }
+            }
+            ViewMode::Logs => {
+                // Full-screen logs view
+                self.logs_view.focused = true;
+                self.logs_view.render(frame, body, &self.logs, &self.logs_container);
+            }
+        }
+
+        // Footer/Status bar
+        let view_str = match self.view_mode {
+            ViewMode::List => "list",
+            ViewMode::Logs => "logs",
+            ViewMode::Create => "create",
+            ViewMode::Filter => "filter",
+            ViewMode::Exec => "exec",
+            ViewMode::Info => "info",
+        };
+        StatusBar::render(frame, footer, view_str);
+
+        // Modals (rendered last, on top)
+        match &self.modal {
+            ModalState::Help => HelpModal::render(frame, frame.area()),
+            ModalState::Confirm(action) => ConfirmModal::render(frame, frame.area(), action),
+            ModalState::None => {}
+        }
+
+        // Create modal
+        if self.view_mode == ViewMode::Create {
+            CreateModal::render(frame, frame.area(), &mut self.create_form);
+        }
+
+        // Exec modal
+        if self.view_mode == ViewMode::Exec {
+            if let Some(ref mut modal) = self.exec_modal {
+                modal.render(frame, frame.area());
+            }
+        }
+
+        // Info modal (network I/O)
+        if self.view_mode == ViewMode::Info {
+            InfoModal::render(frame, frame.area(), self.selected_container(), &self.stats_history);
+        }
+    }
+}
