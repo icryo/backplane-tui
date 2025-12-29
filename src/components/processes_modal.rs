@@ -5,6 +5,15 @@ use ratatui::{
 
 use crate::ui::{centered_modal, Theme};
 
+/// Truncate string to max length
+fn truncate(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        format!("{}…", &s[..max.saturating_sub(1)])
+    }
+}
+
 /// Container processes modal (docker top)
 #[derive(Debug, Clone)]
 pub struct ProcessesModal {
@@ -36,8 +45,8 @@ impl ProcessesModal {
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect) {
-        // Larger modal for process table
-        let modal_area = centered_modal(area, 90, 20);
+        // Wider modal for process table with command
+        let modal_area = centered_modal(area, 100, 22);
 
         // Clear background
         frame.render_widget(Clear, modal_area);
@@ -66,35 +75,53 @@ impl ProcessesModal {
             .constraints([Constraint::Min(0), Constraint::Length(2)])
             .split(inner);
 
-        // Build table rows
+        // ps aux columns: USER PID %CPU %MEM VSZ RSS TTY STAT START TIME COMMAND
+        // We show: PID, %CPU, %MEM, USER, COMMAND (index 1, 2, 3, 0, 10+)
         let header = self.processes.first().cloned().unwrap_or_default();
-        let header_row = Row::new(header.iter().take(6).map(|s| {
-            let truncated = if s.len() > 12 { &s[..12] } else { s };
-            Text::from(truncated.to_string())
-        }))
+        let header_row = Row::new(vec![
+            Text::from(header.get(1).map(|s| s.as_str()).unwrap_or("PID").to_string()),
+            Text::from(header.get(2).map(|s| s.as_str()).unwrap_or("%CPU").to_string()),
+            Text::from(header.get(3).map(|s| s.as_str()).unwrap_or("%MEM").to_string()),
+            Text::from(header.get(0).map(|s| s.as_str()).unwrap_or("USER").to_string()),
+            Text::from("COMMAND".to_string()),
+        ])
         .style(Style::default().fg(Theme::CYAN).add_modifier(Modifier::BOLD));
 
         let rows: Vec<Row> = self.processes
             .iter()
             .skip(1) // Skip header
             .skip(self.scroll)
-            .take(15) // Max visible rows
+            .take(17) // Max visible rows
             .map(|proc| {
-                Row::new(proc.iter().take(6).map(|s| {
-                    let truncated = if s.len() > 12 { &s[..12] } else { s };
-                    Text::from(truncated.to_string())
-                }))
+                // Get command - it's everything from index 10 onwards (joined)
+                let command = if proc.len() > 10 {
+                    proc[10..].join(" ")
+                } else {
+                    proc.last().cloned().unwrap_or_default()
+                };
+                let cmd_display = if command.len() > 55 {
+                    format!("{}...", &command[..52])
+                } else {
+                    command
+                };
+
+                Row::new(vec![
+                    Text::from(proc.get(1).cloned().unwrap_or_default()), // PID
+                    Text::from(proc.get(2).cloned().unwrap_or_default()), // %CPU
+                    Text::from(proc.get(3).cloned().unwrap_or_default()), // %MEM
+                    Text::from(truncate(proc.get(0).map(|s| s.as_str()).unwrap_or(""), 10)), // USER
+                    Text::from(cmd_display), // COMMAND
+                ])
                 .style(Style::default().fg(Theme::FG))
             })
             .collect();
 
         let widths = [
-            Constraint::Length(12), // USER
             Constraint::Length(8),  // PID
             Constraint::Length(6),  // %CPU
             Constraint::Length(6),  // %MEM
-            Constraint::Length(10), // VSZ
-            Constraint::Length(10), // RSS
+            Constraint::Length(10), // USER
+            Constraint::Min(20),    // COMMAND (flexible)
         ];
 
         let table = Table::new(rows, widths)
