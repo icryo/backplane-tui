@@ -4,8 +4,9 @@ use std::time::{Duration, Instant};
 
 use crate::action::Action;
 use crate::components::{
-    ConfirmModal, ContainerList, CreateContainerForm, CreateModal,
-    CreateMode, ExecModal, FilterBar, Header, HelpModal, InfoModal, LogsView, StatsHistory, StatusBar,
+    ConfirmModal, ContainerList, CopyFilesModal, CreateContainerForm, CreateModal,
+    CreateMode, ExecModal, FilterBar, Header, HelpModal, InfoModal, LogsView,
+    ProcessesModal, RenameModal, StatsHistory, StatusBar,
 };
 use crate::components::confirm_modal::ConfirmAction;
 use crate::docker::client::DockerClient;
@@ -22,6 +23,9 @@ pub enum ViewMode {
     Filter,
     Exec,
     Info,
+    Rename,
+    Processes,
+    CopyFiles,
 }
 
 /// Container list view modes (horizontal scroll)
@@ -70,6 +74,15 @@ pub struct App {
     // Exec modal
     pub exec_modal: Option<ExecModal>,
 
+    // Rename modal
+    pub rename_modal: Option<RenameModal>,
+
+    // Processes modal
+    pub processes_modal: Option<ProcessesModal>,
+
+    // Copy files modal
+    pub copy_modal: Option<CopyFilesModal>,
+
     // Stats history for sparklines
     pub stats_history: StatsHistory,
 
@@ -112,6 +125,9 @@ impl App {
             create_form: CreateContainerForm::new(),
             filter: FilterBar::new(),
             exec_modal: None,
+            rename_modal: None,
+            processes_modal: None,
+            copy_modal: None,
             stats_history: StatsHistory::new(30), // Keep 30 samples
             system_stats: SystemStats::default(),
             container_list: ContainerList::new(),
@@ -384,7 +400,12 @@ impl App {
                         modal.previous();
                     }
                 }
-                ViewMode::Info => {} // No scrolling in info modal
+                ViewMode::Info | ViewMode::Rename | ViewMode::CopyFiles => {} // No scrolling
+                ViewMode::Processes => {
+                    if let Some(ref mut modal) = self.processes_modal {
+                        modal.scroll_up();
+                    }
+                }
             },
 
             Action::Down => match self.view_mode {
@@ -404,7 +425,12 @@ impl App {
                         modal.next();
                     }
                 }
-                ViewMode::Info => {} // No scrolling in info modal
+                ViewMode::Info | ViewMode::Rename | ViewMode::CopyFiles => {} // No scrolling
+                ViewMode::Processes => {
+                    if let Some(ref mut modal) = self.processes_modal {
+                        modal.scroll_down();
+                    }
+                }
             },
 
             Action::Top => match self.view_mode {
@@ -482,6 +508,52 @@ impl App {
                 self.refresh_containers().await?;
             }
 
+            Action::PauseContainer(name) => {
+                self.docker.pause_container(&name).await?;
+                self.refresh_containers().await?;
+            }
+
+            Action::UnpauseContainer(name) => {
+                self.docker.unpause_container(&name).await?;
+                self.refresh_containers().await?;
+            }
+
+            Action::RenameContainer(old_name, new_name) => {
+                self.docker.rename_container(&old_name, &new_name).await?;
+                self.refresh_containers().await?;
+            }
+
+            Action::ShowRename(name) => {
+                self.rename_modal = Some(RenameModal::new(name));
+                self.view_mode = ViewMode::Rename;
+            }
+
+            Action::ShowProcesses(name) => {
+                if let Ok(processes) = self.docker.top_container(&name).await {
+                    self.processes_modal = Some(ProcessesModal::new(name, processes));
+                    self.view_mode = ViewMode::Processes;
+                }
+            }
+
+            Action::ShowCopyFiles(name) => {
+                self.copy_modal = Some(CopyFilesModal::new(name));
+                self.view_mode = ViewMode::CopyFiles;
+            }
+
+            Action::CopyFromContainer(container, container_path, host_path) => {
+                // Use docker cp command
+                let _ = std::process::Command::new("docker")
+                    .args(["cp", &format!("{}:{}", container, container_path), &host_path])
+                    .status();
+            }
+
+            Action::CopyToContainer(container, host_path, container_path) => {
+                // Use docker cp command
+                let _ = std::process::Command::new("docker")
+                    .args(["cp", &host_path, &format!("{}:{}", container, container_path)])
+                    .status();
+            }
+
             Action::Refresh => {
                 self.refresh_containers().await?;
             }
@@ -534,7 +606,8 @@ impl App {
 
         // Main content area based on view mode
         match self.view_mode {
-            ViewMode::List | ViewMode::Filter | ViewMode::Create | ViewMode::Exec | ViewMode::Info => {
+            ViewMode::List | ViewMode::Filter | ViewMode::Create | ViewMode::Exec | ViewMode::Info
+            | ViewMode::Rename | ViewMode::Processes | ViewMode::CopyFiles => {
                 // Full-width container list (with optional filter bar at bottom)
                 let (list_area, filter_area) = if self.filter.active || self.view_mode == ViewMode::Filter {
                     let chunks = ratatui::prelude::Layout::default()
@@ -573,6 +646,9 @@ impl App {
             ViewMode::Filter => "filter",
             ViewMode::Exec => "exec",
             ViewMode::Info => "info",
+            ViewMode::Rename => "rename",
+            ViewMode::Processes => "processes",
+            ViewMode::CopyFiles => "copy",
         };
         StatusBar::render(frame, footer, view_str);
 
@@ -598,6 +674,27 @@ impl App {
         // Info modal (network I/O)
         if self.view_mode == ViewMode::Info {
             InfoModal::render(frame, frame.area(), self.selected_container(), &self.stats_history);
+        }
+
+        // Rename modal
+        if self.view_mode == ViewMode::Rename {
+            if let Some(ref modal) = self.rename_modal {
+                modal.render(frame, frame.area());
+            }
+        }
+
+        // Processes modal
+        if self.view_mode == ViewMode::Processes {
+            if let Some(ref modal) = self.processes_modal {
+                modal.render(frame, frame.area());
+            }
+        }
+
+        // Copy files modal
+        if self.view_mode == ViewMode::CopyFiles {
+            if let Some(ref modal) = self.copy_modal {
+                modal.render(frame, frame.area());
+            }
         }
     }
 }

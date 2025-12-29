@@ -10,6 +10,9 @@ pub mod filter_bar;
 pub mod exec_modal;
 pub mod sparkline;
 pub mod info_modal;
+pub mod rename_modal;
+pub mod processes_modal;
+pub mod copy_files_modal;
 
 pub use container_list::ContainerList;
 pub use logs_view::LogsView;
@@ -22,3 +25,6 @@ pub use filter_bar::FilterBar;
 pub use exec_modal::ExecModal;
 pub use sparkline::StatsHistory;
 pub use info_modal::InfoModal;
+pub use rename_modal::RenameModal;
+pub use processes_modal::ProcessesModal;
+pub use copy_files_modal::CopyFilesModal;

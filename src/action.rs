@@ -14,6 +14,11 @@ pub enum Action {
     StopContainer(String),
     RestartContainer(String),
     DeleteContainer(String),
+    PauseContainer(String),
+    UnpauseContainer(String),
+    RenameContainer(String, String), // (old_name, new_name)
+    CopyFromContainer(String, String, String), // (container, container_path, host_path)
+    CopyToContainer(String, String, String), // (container, host_path, container_path)
 
     // Views
     ViewLogs(String),
@@ -24,6 +29,9 @@ pub enum Action {
     ShowHelp,
     ShowConfirmDelete(String),
     ShowConfirmStop(String),
+    ShowRename(String),
+    ShowProcesses(String),
+    ShowCopyFiles(String),
     CloseModal,
     ConfirmAction,
 

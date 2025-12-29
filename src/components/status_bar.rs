@@ -20,13 +20,14 @@ impl StatusBar {
         vec![
             KeyBinding { key: "↑↓", desc: "nav" },
             KeyBinding { key: "←→", desc: "view" },
-            KeyBinding { key: "/", desc: "filter" },
-            KeyBinding { key: "i", desc: "info" },
-            KeyBinding { key: "e", desc: "exec" },
             KeyBinding { key: "s", desc: "start" },
             KeyBinding { key: "x", desc: "stop" },
+            KeyBinding { key: "p/P", desc: "pause" },
             KeyBinding { key: "l", desc: "logs" },
-            KeyBinding { key: "n", desc: "new" },
+            KeyBinding { key: "t", desc: "top" },
+            KeyBinding { key: "e", desc: "exec" },
+            KeyBinding { key: "N", desc: "rename" },
+            KeyBinding { key: "C", desc: "copy" },
             KeyBinding { key: "?", desc: "help" },
         ]
     }
@@ -76,6 +77,33 @@ impl StatusBar {
         ]
     }
 
+    /// Get keybindings for rename view
+    pub fn rename_keybindings() -> Vec<KeyBinding> {
+        vec![
+            KeyBinding { key: "Enter", desc: "rename" },
+            KeyBinding { key: "Esc", desc: "cancel" },
+        ]
+    }
+
+    /// Get keybindings for processes view
+    pub fn processes_keybindings() -> Vec<KeyBinding> {
+        vec![
+            KeyBinding { key: "↑↓", desc: "scroll" },
+            KeyBinding { key: "t", desc: "close" },
+            KeyBinding { key: "Esc", desc: "close" },
+        ]
+    }
+
+    /// Get keybindings for copy view
+    pub fn copy_keybindings() -> Vec<KeyBinding> {
+        vec![
+            KeyBinding { key: "Tab", desc: "next" },
+            KeyBinding { key: "Space", desc: "toggle" },
+            KeyBinding { key: "Enter", desc: "copy" },
+            KeyBinding { key: "Esc", desc: "cancel" },
+        ]
+    }
+
     pub fn render(frame: &mut Frame, area: Rect, view: &str) {
         // Keybindings based on view
         let keybindings = match view {
@@ -84,6 +112,9 @@ impl StatusBar {
             "filter" => Self::filter_keybindings(),
             "exec" => Self::exec_keybindings(),
             "info" => Self::info_keybindings(),
+            "rename" => Self::rename_keybindings(),
+            "processes" => Self::processes_keybindings(),
+            "copy" => Self::copy_keybindings(),
             _ => Self::list_keybindings(),
         };
 

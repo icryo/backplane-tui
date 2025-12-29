@@ -59,6 +59,15 @@ async fn main() -> Result<()> {
                             app.view_mode = ViewMode::List;
                         }
                     }
+                    ViewMode::Rename => {
+                        handle_rename_mode(&mut app, key).await?;
+                    }
+                    ViewMode::Processes => {
+                        handle_processes_mode(&mut app, key);
+                    }
+                    ViewMode::CopyFiles => {
+                        handle_copy_mode(&mut app, key).await?;
+                    }
                     _ => {
                         // Special handling for 'n' to open create form
                         if key.code == KeyCode::Char('n') && app.view_mode == ViewMode::List && matches!(app.modal, ModalState::None) {
@@ -273,7 +282,8 @@ fn handle_key_event(app: &App, key: event::KeyEvent) -> Action {
     match app.view_mode {
         ViewMode::List => handle_list_key(app, key),
         ViewMode::Logs => handle_logs_key(key),
-        ViewMode::Create | ViewMode::Filter | ViewMode::Exec | ViewMode::Info => Action::None, // Handled separately
+        ViewMode::Create | ViewMode::Filter | ViewMode::Exec | ViewMode::Info
+        | ViewMode::Rename | ViewMode::Processes | ViewMode::CopyFiles => Action::None, // Handled separately
     }
 }
 
@@ -329,6 +339,63 @@ fn handle_list_key(app: &App, key: event::KeyEvent) -> Action {
 
         KeyCode::Char('r') => Action::Refresh,
 
+        // Pause container
+        KeyCode::Char('p') => {
+            if let Some(container) = app.selected_container() {
+                if container.status.is_running() {
+                    Action::PauseContainer(container.name.clone())
+                } else {
+                    Action::None
+                }
+            } else {
+                Action::None
+            }
+        }
+
+        // Unpause container
+        KeyCode::Char('P') => {
+            if let Some(container) = app.selected_container() {
+                if container.status == crate::models::ContainerStatus::Paused {
+                    Action::UnpauseContainer(container.name.clone())
+                } else {
+                    Action::None
+                }
+            } else {
+                Action::None
+            }
+        }
+
+        // Rename container
+        KeyCode::Char('N') => {
+            if let Some(name) = app.selected_container_name() {
+                Action::ShowRename(name)
+            } else {
+                Action::None
+            }
+        }
+
+        // View processes (docker top)
+        KeyCode::Char('t') => {
+            if let Some(container) = app.selected_container() {
+                if container.status.is_running() {
+                    Action::ShowProcesses(container.name.clone())
+                } else {
+                    Action::None
+                }
+            } else {
+                Action::None
+            }
+        }
+
+        // Copy files
+        KeyCode::Char('C') => {
+            if let Some(name) = app.selected_container_name() {
+                Action::ShowCopyFiles(name)
+            } else {
+                Action::None
+            }
+        }
+
         // 'n' for new container - handled specially
         KeyCode::Char('n') => Action::None, // Will be handled in main loop
 
@@ -346,4 +413,122 @@ fn handle_logs_key(key: event::KeyEvent) -> Action {
         KeyCode::Char('G') => Action::Bottom,
         _ => Action::None,
     }
+}
+
+/// Handle keys in rename mode
+async fn handle_rename_mode(app: &mut App, key: event::KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Esc => {
+            app.rename_modal = None;
+            app.view_mode = ViewMode::List;
+        }
+        KeyCode::Enter => {
+            if let Some(ref modal) = app.rename_modal {
+                if modal.is_valid() {
+                    let old_name = modal.container_name.clone();
+                    let new_name = modal.new_name.clone();
+                    app.handle_action(Action::RenameContainer(old_name, new_name)).await?;
+                    app.rename_modal = None;
+                    app.view_mode = ViewMode::List;
+                }
+            }
+        }
+        KeyCode::Backspace => {
+            if let Some(ref mut modal) = app.rename_modal {
+                modal.handle_backspace();
+            }
+        }
+        KeyCode::Char(c) => {
+            if let Some(ref mut modal) = app.rename_modal {
+                modal.handle_char(c);
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Handle keys in processes mode
+fn handle_processes_mode(app: &mut App, key: event::KeyEvent) {
+    match key.code {
+        KeyCode::Esc | KeyCode::Char('t') => {
+            app.processes_modal = None;
+            app.view_mode = ViewMode::List;
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            if let Some(ref mut modal) = app.processes_modal {
+                modal.scroll_up();
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if let Some(ref mut modal) = app.processes_modal {
+                modal.scroll_down();
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Handle keys in copy files mode
+async fn handle_copy_mode(app: &mut App, key: event::KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Esc => {
+            app.copy_modal = None;
+            app.view_mode = ViewMode::List;
+        }
+        KeyCode::Tab => {
+            if let Some(ref mut modal) = app.copy_modal {
+                modal.next_field();
+            }
+        }
+        KeyCode::BackTab => {
+            if let Some(ref mut modal) = app.copy_modal {
+                modal.prev_field();
+            }
+        }
+        KeyCode::Enter => {
+            if let Some(ref modal) = app.copy_modal {
+                if modal.is_valid() {
+                    use crate::components::copy_files_modal::CopyDirection;
+                    let container = modal.container_name.clone();
+                    let host = modal.host_path.clone();
+                    let container_path = modal.container_path.clone();
+
+                    let action = match modal.direction {
+                        CopyDirection::FromContainer => {
+                            Action::CopyFromContainer(container, container_path, host)
+                        }
+                        CopyDirection::ToContainer => {
+                            Action::CopyToContainer(container, host, container_path)
+                        }
+                    };
+                    app.handle_action(action).await?;
+                    app.copy_modal = None;
+                    app.view_mode = ViewMode::List;
+                }
+            }
+        }
+        KeyCode::Backspace => {
+            if let Some(ref mut modal) = app.copy_modal {
+                modal.handle_backspace();
+            }
+        }
+        KeyCode::Char(' ') => {
+            // Space toggles direction when on field 0
+            if let Some(ref mut modal) = app.copy_modal {
+                if modal.active_field == 0 {
+                    modal.toggle_direction();
+                } else {
+                    modal.handle_char(' ');
+                }
+            }
+        }
+        KeyCode::Char(c) => {
+            if let Some(ref mut modal) = app.copy_modal {
+                modal.handle_char(c);
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }

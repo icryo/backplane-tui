@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use bollard::container::{
     Config, CreateContainerOptions, ListContainersOptions, RemoveContainerOptions,
-    RestartContainerOptions, StartContainerOptions, StopContainerOptions,
+    RenameContainerOptions, RestartContainerOptions, StartContainerOptions, StopContainerOptions,
+    TopOptions,
 };
 use bollard::image::ListImagesOptions;
 use bollard::models::{HostConfig, PortBinding};
@@ -150,6 +151,58 @@ impl DockerClient {
             .await
             .context(format!("Failed to remove container: {}", name))?;
         Ok(())
+    }
+
+    /// Pause a container
+    pub async fn pause_container(&self, name: &str) -> Result<()> {
+        self.client
+            .pause_container(name)
+            .await
+            .context(format!("Failed to pause container: {}", name))?;
+        Ok(())
+    }
+
+    /// Unpause a container
+    pub async fn unpause_container(&self, name: &str) -> Result<()> {
+        self.client
+            .unpause_container(name)
+            .await
+            .context(format!("Failed to unpause container: {}", name))?;
+        Ok(())
+    }
+
+    /// Rename a container
+    pub async fn rename_container(&self, name: &str, new_name: &str) -> Result<()> {
+        let options = RenameContainerOptions { name: new_name };
+        self.client
+            .rename_container(name, options)
+            .await
+            .context(format!("Failed to rename container: {} -> {}", name, new_name))?;
+        Ok(())
+    }
+
+    /// Get running processes in a container (docker top)
+    pub async fn top_container(&self, name: &str) -> Result<Vec<Vec<String>>> {
+        let result = self.client
+            .top_processes(name, Some(TopOptions { ps_args: "aux" }))
+            .await
+            .context(format!("Failed to get processes for container: {}", name))?;
+
+        let mut processes = Vec::new();
+
+        // Add header row
+        if let Some(titles) = result.titles {
+            processes.push(titles);
+        }
+
+        // Add process rows
+        if let Some(procs) = result.processes {
+            for proc in procs {
+                processes.push(proc);
+            }
+        }
+
+        Ok(processes)
     }
 
     /// List all available images
