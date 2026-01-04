@@ -101,8 +101,8 @@ impl ContainerDetail {
         let mem_history = history.get_mem(&container.name);
 
         let sparkline_width = 20;
-        let cpu_spark = StatsHistory::to_sparkline(cpu_history, sparkline_width);
-        let mem_spark = StatsHistory::to_sparkline(mem_history, sparkline_width);
+        let cpu_spark = StatsHistory::to_sparkline(&cpu_history, sparkline_width);
+        let mem_spark = StatsHistory::to_sparkline(&mem_history, sparkline_width);
 
         // CPU line with sparkline
         if let Some(stats) = &container.stats {

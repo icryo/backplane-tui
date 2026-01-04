@@ -47,8 +47,8 @@ impl InfoModal {
                 // Get sparkline data
                 let cpu_history = stats_history.get_cpu(&c.name);
                 let mem_history = stats_history.get_mem(&c.name);
-                let cpu_spark = StatsHistory::to_sparkline(cpu_history, sparkline_width);
-                let mem_spark = StatsHistory::to_sparkline(mem_history, sparkline_width);
+                let cpu_spark = StatsHistory::to_sparkline(&cpu_history, sparkline_width);
+                let mem_spark = StatsHistory::to_sparkline(&mem_history, sparkline_width);
 
                 // Network stats
                 let (rx_str, tx_str, rx_rate, tx_rate) = if let Some(stats) = &c.stats {

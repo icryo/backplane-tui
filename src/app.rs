@@ -100,8 +100,13 @@ pub struct App {
     // Refresh timing
     last_container_refresh: Instant,
     last_stats_refresh: Instant,
+    last_vram_refresh: Instant,
+    last_logs_refresh: Instant,
     container_refresh_interval: Duration,
     stats_refresh_interval: Duration,
+    vram_refresh_interval: Duration,
+    logs_refresh_interval: Duration,
+    cached_vram: Option<f32>,
 }
 
 impl App {
@@ -136,8 +141,13 @@ impl App {
             disks,
             last_container_refresh: Instant::now() - Duration::from_secs(10),
             last_stats_refresh: Instant::now() - Duration::from_secs(10),
+            last_vram_refresh: Instant::now() - Duration::from_secs(10),
+            last_logs_refresh: Instant::now() - Duration::from_secs(10),
             container_refresh_interval: Duration::from_secs(3),
             stats_refresh_interval: Duration::from_secs(2),
+            vram_refresh_interval: Duration::from_secs(2),
+            logs_refresh_interval: Duration::from_secs(2),
+            cached_vram: None,
         };
 
         app.refresh_containers().await?;
@@ -243,7 +253,15 @@ impl App {
             .unwrap_or((0.0, 1.0));
 
         let disk_percent = (disk_used / disk_total) * 100.0;
-        let vram_percent = SystemStats::get_vram_percent();
+
+        // Throttle nvidia-smi calls - only refresh every 2 seconds
+        let vram_percent = if self.last_vram_refresh.elapsed() >= self.vram_refresh_interval {
+            self.last_vram_refresh = Instant::now();
+            self.cached_vram = SystemStats::get_vram_percent();
+            self.cached_vram
+        } else {
+            self.cached_vram
+        };
 
         self.system_stats = SystemStats {
             cpu_percent,
@@ -356,7 +374,10 @@ impl App {
 
         self.refresh_system_stats();
 
-        if self.view_mode == ViewMode::Logs && !self.logs_container.is_empty() {
+        // Throttle log refreshes to every 2 seconds
+        if self.view_mode == ViewMode::Logs && !self.logs_container.is_empty()
+            && self.last_logs_refresh.elapsed() >= self.logs_refresh_interval {
+            self.last_logs_refresh = Instant::now();
             if let Ok(logs) = get_container_logs(self.docker.inner(), &self.logs_container, 500).await {
                 self.logs = logs;
             }

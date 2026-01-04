@@ -1,12 +1,12 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 /// Rolling history for sparkline display
 #[derive(Debug, Clone, Default)]
 pub struct StatsHistory {
     /// CPU history per container (container_name -> values)
-    cpu: HashMap<String, Vec<f64>>,
+    cpu: HashMap<String, VecDeque<f64>>,
     /// Memory history per container (container_name -> values)
-    mem: HashMap<String, Vec<f64>>,
+    mem: HashMap<String, VecDeque<f64>>,
     /// Maximum samples to keep
     max_samples: usize,
 }
@@ -22,30 +22,30 @@ impl StatsHistory {
 
     /// Record a CPU sample for a container
     pub fn record_cpu(&mut self, container: &str, value: f64) {
-        let history = self.cpu.entry(container.to_string()).or_insert_with(Vec::new);
-        history.push(value);
+        let history = self.cpu.entry(container.to_string()).or_insert_with(VecDeque::new);
+        history.push_back(value);
         if history.len() > self.max_samples {
-            history.remove(0);
+            history.pop_front(); // O(1) instead of O(n)
         }
     }
 
     /// Record a memory sample for a container
     pub fn record_mem(&mut self, container: &str, value: f64) {
-        let history = self.mem.entry(container.to_string()).or_insert_with(Vec::new);
-        history.push(value);
+        let history = self.mem.entry(container.to_string()).or_insert_with(VecDeque::new);
+        history.push_back(value);
         if history.len() > self.max_samples {
-            history.remove(0);
+            history.pop_front(); // O(1) instead of O(n)
         }
     }
 
     /// Get CPU history for a container
-    pub fn get_cpu(&self, container: &str) -> &[f64] {
-        self.cpu.get(container).map(|v| v.as_slice()).unwrap_or(&[])
+    pub fn get_cpu(&self, container: &str) -> Vec<f64> {
+        self.cpu.get(container).map(|v| v.iter().copied().collect()).unwrap_or_default()
     }
 
     /// Get memory history for a container
-    pub fn get_mem(&self, container: &str) -> &[f64] {
-        self.mem.get(container).map(|v| v.as_slice()).unwrap_or(&[])
+    pub fn get_mem(&self, container: &str) -> Vec<f64> {
+        self.mem.get(container).map(|v| v.iter().copied().collect()).unwrap_or_default()
     }
 
     /// Remove history for a container (when it's removed)
