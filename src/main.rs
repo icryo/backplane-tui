@@ -5,12 +5,13 @@ mod app;
 mod components;
 mod config;
 mod docker;
+mod effects;
 mod models;
 mod tui;
 mod ui;
 
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
@@ -27,12 +28,17 @@ async fn main() -> Result<()> {
     // Create app
     let mut app = App::new().await?;
 
-    // Main event loop
-    let tick_rate = Duration::from_millis(500);
+    // Main event loop - use faster tick for smooth animations
+    let tick_rate = Duration::from_millis(32); // ~30 FPS for animations
+    let mut last_frame = Instant::now();
 
     loop {
-        // Render
-        terminal.draw(|frame| app.render(frame))?;
+        // Calculate elapsed time for animations
+        let elapsed = last_frame.elapsed();
+        last_frame = Instant::now();
+
+        // Render with elapsed time for effects
+        terminal.draw(|frame| app.render_with_effects(frame, elapsed))?;
 
         // Handle events with timeout for tick
         if event::poll(tick_rate)? {

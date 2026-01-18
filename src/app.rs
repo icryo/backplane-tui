@@ -12,6 +12,7 @@ use crate::components::confirm_modal::ConfirmAction;
 use crate::docker::client::DockerClient;
 use crate::docker::logs::get_container_logs;
 use crate::docker::stats::get_container_stats;
+use crate::effects::EffectManager;
 use crate::models::{ContainerInfo, SystemStats};
 
 /// Current view mode
@@ -107,6 +108,9 @@ pub struct App {
     vram_refresh_interval: Duration,
     logs_refresh_interval: Duration,
     cached_vram: Option<f32>,
+
+    // Visual effects
+    pub effects: EffectManager,
 }
 
 impl App {
@@ -148,6 +152,7 @@ impl App {
             vram_refresh_interval: Duration::from_secs(2),
             logs_refresh_interval: Duration::from_secs(2),
             cached_vram: None,
+            effects: EffectManager::new(),
         };
 
         app.refresh_containers().await?;
@@ -243,16 +248,30 @@ impl App {
             0.0
         };
 
+        // Sum all local physical disks (exclude tmpfs, overlay, network mounts, etc.)
         let (disk_used, disk_total) = self.disks.iter()
-            .find(|d| d.mount_point().to_str() == Some("/"))
-            .map(|d| {
-                let total = d.total_space() as f32;
-                let available = d.available_space() as f32;
-                (total - available, total)
+            .filter(|d| {
+                let fs = d.file_system().to_string_lossy();
+                let mount = d.mount_point().to_string_lossy();
+                // Include real filesystems: ext4, xfs, btrfs, ntfs, etc.
+                // Exclude: tmpfs, devtmpfs, overlay, squashfs, nfs, cifs, fuse
+                let is_real_fs = matches!(fs.as_ref(),
+                    "ext4" | "ext3" | "ext2" | "xfs" | "btrfs" | "ntfs" | "vfat" | "f2fs" | "zfs");
+                // Exclude snap mounts and other system mounts
+                let is_user_mount = !mount.starts_with("/snap") && !mount.starts_with("/boot");
+                is_real_fs && is_user_mount
             })
-            .unwrap_or((0.0, 1.0));
+            .fold((0.0f32, 0.0f32), |(used, total), d| {
+                let d_total = d.total_space() as f32;
+                let d_available = d.available_space() as f32;
+                (used + (d_total - d_available), total + d_total)
+            });
 
-        let disk_percent = (disk_used / disk_total) * 100.0;
+        let disk_percent = if disk_total > 0.0 {
+            (disk_used / disk_total) * 100.0
+        } else {
+            0.0
+        };
 
         // Throttle nvidia-smi calls - only refresh every 2 seconds
         let vram_percent = if self.last_vram_refresh.elapsed() >= self.vram_refresh_interval {
@@ -511,11 +530,13 @@ impl App {
 
             Action::StartContainer(name) => {
                 self.docker.start_container(&name).await?;
+                self.effects.trigger_status_change(true);
                 self.refresh_containers().await?;
             }
 
             Action::StopContainer(name) => {
                 self.docker.stop_container(&name).await?;
+                self.effects.trigger_status_change(false);
                 self.refresh_containers().await?;
             }
 
@@ -717,5 +738,37 @@ impl App {
                 modal.render(frame, frame.area());
             }
         }
+    }
+
+    /// Render with visual effects
+    pub fn render_with_effects(&mut self, frame: &mut ratatui::Frame, elapsed: Duration) {
+        // First do the normal render
+        self.render(frame);
+
+        let area = frame.area();
+
+        // Process startup fade-in effect (affects whole screen)
+        self.effects.process(elapsed, frame.buffer_mut(), area);
+
+        // Process loading effect on header area if loading
+        if self.loading {
+            let header_area = ratatui::prelude::Layout::default()
+                .direction(ratatui::prelude::Direction::Vertical)
+                .constraints([ratatui::prelude::Constraint::Length(3)])
+                .split(area)[0];
+            self.effects.process_loading(elapsed, frame.buffer_mut(), header_area, true);
+        }
+
+        // Use the same layout as render() to get correct body area
+        let body_area = ratatui::prelude::Layout::default()
+            .direction(ratatui::prelude::Direction::Vertical)
+            .constraints([
+                ratatui::prelude::Constraint::Length(1),  // header (1 line)
+                ratatui::prelude::Constraint::Min(0),     // body
+                ratatui::prelude::Constraint::Length(1),  // footer (1 line)
+            ])
+            .split(area)[1];
+
+        self.effects.process_status(elapsed, frame.buffer_mut(), body_area);
     }
 }
