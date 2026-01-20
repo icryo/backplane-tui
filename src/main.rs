@@ -405,6 +405,9 @@ fn handle_list_key(app: &App, key: event::KeyEvent) -> Action {
         // 'n' for new container - handled specially
         KeyCode::Char('n') => Action::None, // Will be handled in main loop
 
+        // 'f' to cycle status filter (All -> Running -> Stopped)
+        KeyCode::Char('f') => Action::CycleStatusFilter,
+
         _ => Action::None,
     }
 }

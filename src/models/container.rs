@@ -44,6 +44,12 @@ impl ContainerStatus {
     pub fn is_running(&self) -> bool {
         matches!(self, Self::Running)
     }
+
+    /// Returns true if container is active (running or paused)
+    /// Paused containers still hold resources like GPU memory
+    pub fn is_active(&self) -> bool {
+        matches!(self, Self::Running | Self::Paused)
+    }
 }
 
 /// Port mapping info
@@ -76,6 +82,8 @@ pub struct ContainerInfo {
     pub ports: Vec<PortMapping>,
     pub stats: Option<ContainerStats>,
     pub created: Option<i64>,
+    /// Compose project name (from com.docker.compose.project label)
+    pub compose_project: Option<String>,
 }
 
 impl ContainerInfo {
@@ -90,6 +98,7 @@ impl ContainerInfo {
             ports: Vec::new(),
             stats: None,
             created: None,
+            compose_project: None,
         }
     }
 }

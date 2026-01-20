@@ -3,7 +3,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, ListState},
 };
 
-use crate::app::ListViewMode;
+use crate::app::{ListViewMode, StatusFilter};
 use crate::models::ContainerInfo;
 use crate::ui::{border_style, selected_style, status_color, status_icon, Theme, title_style};
 
@@ -11,6 +11,8 @@ use crate::ui::{border_style, selected_style, status_color, status_icon, Theme, 
 pub struct ContainerList {
     pub state: ListState,
     pub focused: bool,
+    /// When in Groups mode, maps visual index to container index (None = header row)
+    item_to_container: Vec<Option<usize>>,
 }
 
 impl ContainerList {
@@ -20,15 +22,16 @@ impl ContainerList {
         Self {
             state,
             focused: true,
+            item_to_container: Vec::new(),
         }
     }
 
-    /// Move selection up
+    /// Move selection up (skips header rows in groups mode)
     pub fn previous(&mut self, len: usize) {
         if len == 0 {
             return;
         }
-        let i = match self.state.selected() {
+        let mut i = match self.state.selected() {
             Some(i) => {
                 if i == 0 {
                     len - 1
@@ -38,15 +41,25 @@ impl ContainerList {
             }
             None => 0,
         };
+        // Skip header rows (where item_to_container is None)
+        if !self.item_to_container.is_empty() {
+            let start = i;
+            while self.item_to_container.get(i).copied().flatten().is_none() {
+                i = if i == 0 { len - 1 } else { i - 1 };
+                if i == start {
+                    break; // Avoid infinite loop
+                }
+            }
+        }
         self.state.select(Some(i));
     }
 
-    /// Move selection down
+    /// Move selection down (skips header rows in groups mode)
     pub fn next(&mut self, len: usize) {
         if len == 0 {
             return;
         }
-        let i = match self.state.selected() {
+        let mut i = match self.state.selected() {
             Some(i) => {
                 if i >= len - 1 {
                     0
@@ -56,49 +69,107 @@ impl ContainerList {
             }
             None => 0,
         };
+        // Skip header rows (where item_to_container is None)
+        if !self.item_to_container.is_empty() {
+            let start = i;
+            while self.item_to_container.get(i).copied().flatten().is_none() {
+                i = if i >= len - 1 { 0 } else { i + 1 };
+                if i == start {
+                    break; // Avoid infinite loop
+                }
+            }
+        }
         self.state.select(Some(i));
     }
 
-    /// Go to top
+    /// Go to top (skips header if present)
     pub fn top(&mut self) {
-        self.state.select(Some(0));
+        let mut i = 0;
+        // Skip header at top if in groups mode
+        if !self.item_to_container.is_empty() {
+            while self.item_to_container.get(i).copied().flatten().is_none() {
+                i += 1;
+                if i >= self.item_to_container.len() {
+                    i = 0;
+                    break;
+                }
+            }
+        }
+        self.state.select(Some(i));
     }
 
-    /// Go to bottom
+    /// Go to bottom (skips header if present)
     pub fn bottom(&mut self, len: usize) {
         if len > 0 {
-            self.state.select(Some(len - 1));
+            let mut i = len - 1;
+            // Skip header at bottom if in groups mode
+            if !self.item_to_container.is_empty() {
+                while self.item_to_container.get(i).copied().flatten().is_none() && i > 0 {
+                    i -= 1;
+                }
+            }
+            self.state.select(Some(i));
         }
     }
 
-    /// Get currently selected index
+    /// Get currently selected visual index
     pub fn selected(&self) -> Option<usize> {
         self.state.selected()
     }
 
+    /// Get the container index for the current selection (handles groups mode mapping)
+    pub fn selected_container_index(&self) -> Option<usize> {
+        self.state.selected().and_then(|i| {
+            if self.item_to_container.is_empty() {
+                Some(i) // Not in groups mode, direct mapping
+            } else {
+                self.item_to_container.get(i).copied().flatten()
+            }
+        })
+    }
+
     /// Render the container list (full-width with inline stats)
-    pub fn render(&mut self, frame: &mut Frame, area: Rect, containers: &[ContainerInfo], view_mode: ListViewMode) {
-        let items: Vec<ListItem> = containers
-            .iter()
-            .map(|c| {
-                let icon = status_icon(&c.status);
-
-                let line = match view_mode {
-                    ListViewMode::Stats => self.render_stats_line(c, icon),
-                    ListViewMode::Network => self.render_network_line(c, icon),
-                    ListViewMode::Details => self.render_details_line(c, icon),
-                };
-
-                ListItem::new(line)
-            })
-            .collect();
+    pub fn render(&mut self, frame: &mut Frame, area: Rect, containers: &[ContainerInfo], view_mode: ListViewMode, status_filter: StatusFilter, total_count: usize) {
+        // Build items - either flat or grouped
+        let (items, item_count) = if status_filter == StatusFilter::Groups {
+            self.build_grouped_items(containers, view_mode)
+        } else {
+            self.item_to_container.clear(); // Clear mapping for non-groups mode
+            let items: Vec<ListItem> = containers
+                .iter()
+                .map(|c| {
+                    let icon = status_icon(&c.status);
+                    let line = match view_mode {
+                        ListViewMode::Stats => self.render_stats_line(c, icon, false),
+                        ListViewMode::Network => self.render_network_line(c, icon),
+                        ListViewMode::Details => self.render_details_line(c, icon),
+                    };
+                    ListItem::new(line)
+                })
+                .collect();
+            let len = items.len();
+            (items, len)
+        };
 
         // Build tab indicator
         let tabs = self.build_tabs(view_mode);
+
+        // Build status filter indicator
+        let filter_spans = self.build_filter_indicator(status_filter);
+
+        // Show filtered count vs total if filtering is active
+        let count_str = if status_filter == StatusFilter::All || status_filter == StatusFilter::Groups {
+            format!(" Containers ({}) ", containers.len())
+        } else {
+            format!(" Containers ({}/{}) ", containers.len(), total_count)
+        };
+
         let title = Line::from(vec![
-            Span::styled(format!(" Containers ({}) ", containers.len()), title_style(self.focused)),
+            Span::styled(count_str, title_style(self.focused)),
             Span::styled("│ ", Style::default().fg(Theme::BORDER)),
             tabs.0, tabs.1, tabs.2,
+            Span::styled(" │ ", Style::default().fg(Theme::BORDER)),
+            filter_spans.0, filter_spans.1, filter_spans.2, filter_spans.3,
         ]);
 
         let list = List::new(items)
@@ -112,6 +183,64 @@ impl ContainerList {
             .highlight_symbol("▶");
 
         frame.render_stateful_widget(list, area, &mut self.state);
+
+        // Ensure selection is valid for grouped mode
+        if status_filter == StatusFilter::Groups && !self.item_to_container.is_empty() {
+            if let Some(sel) = self.state.selected() {
+                // If current selection is a header, move to next container
+                if self.item_to_container.get(sel).copied().flatten().is_none() {
+                    self.next(item_count);
+                }
+            }
+        }
+    }
+
+    /// Build grouped items with project headers
+    fn build_grouped_items(&mut self, containers: &[ContainerInfo], view_mode: ListViewMode) -> (Vec<ListItem<'static>>, usize) {
+        let mut items: Vec<ListItem> = Vec::new();
+        self.item_to_container.clear();
+        let mut current_project: Option<&str> = Some("__initial__"); // Sentinel to force first header
+
+        for (idx, c) in containers.iter().enumerate() {
+            let container_project = c.compose_project.as_deref();
+
+            // Check if we're entering a new project group
+            if container_project != current_project {
+                current_project = container_project;
+                // Add project header
+                let header = self.render_group_header(container_project);
+                items.push(header);
+                self.item_to_container.push(None); // Header row
+            }
+
+            let icon = status_icon(&c.status);
+            let line = match view_mode {
+                ListViewMode::Stats => self.render_stats_line(c, icon, true),
+                ListViewMode::Network => self.render_network_line(c, icon),
+                ListViewMode::Details => self.render_details_line(c, icon),
+            };
+            items.push(ListItem::new(line));
+            self.item_to_container.push(Some(idx));
+        }
+
+        let len = items.len();
+        (items, len)
+    }
+
+    /// Render a group header row
+    fn render_group_header(&self, project: Option<&str>) -> ListItem<'static> {
+        let project_name = project.unwrap_or("Ungrouped");
+        let header_style = Style::default()
+            .fg(Theme::MAUVE)
+            .add_modifier(Modifier::BOLD);
+
+        let line = Line::from(vec![
+            Span::styled("   ", Style::default()), // Indent to align with container names
+            Span::styled(format!("┌─ {} ", project_name), header_style),
+            Span::styled("─".repeat(60), Style::default().fg(Theme::BORDER)),
+        ]);
+
+        ListItem::new(line).style(Style::default().bg(Theme::BG_DARK))
     }
 
     /// Build styled tab spans for the view mode indicator
@@ -135,10 +264,32 @@ impl ContainerList {
         )
     }
 
-    /// Render Stats view line: Name, Type, Port, CPU bar, MEM bar
-    fn render_stats_line(&self, c: &ContainerInfo, icon: &str) -> Line<'static> {
-        let type_indicator = if c.is_cli { "CLI" } else { "WEB" };
+    /// Build styled spans for status filter indicator
+    fn build_filter_indicator(&self, status_filter: StatusFilter) -> (Span<'static>, Span<'static>, Span<'static>, Span<'static>) {
+        let active_style = Style::default()
+            .fg(Theme::BG_DARK)
+            .bg(Theme::TEAL)
+            .add_modifier(Modifier::BOLD);
+        let inactive_style = Style::default().fg(Theme::FG_DARK);
 
+        let (all_style, groups_style, running_style, stopped_style) = match status_filter {
+            StatusFilter::All => (active_style, inactive_style, inactive_style, inactive_style),
+            StatusFilter::Groups => (inactive_style, active_style, inactive_style, inactive_style),
+            StatusFilter::Running => (inactive_style, inactive_style, active_style, inactive_style),
+            StatusFilter::Stopped => (inactive_style, inactive_style, inactive_style, active_style),
+        };
+
+        (
+            Span::styled(" All ", all_style),
+            Span::styled(" Groups ", groups_style),
+            Span::styled(" Running ", running_style),
+            Span::styled(" Stopped ", stopped_style),
+        )
+    }
+
+    /// Render Stats view line: Name, Project, Port, CPU bar, MEM bar, GPU
+    /// When grouped=true, project column is hidden (shown in header instead)
+    fn render_stats_line(&self, c: &ContainerInfo, icon: &str, grouped: bool) -> Line<'static> {
         // Format ports (show first port or "-")
         let port_str = if c.ports.is_empty() {
             "-".to_string()
@@ -149,35 +300,71 @@ impl ContainerList {
         };
 
         // CPU/MEM bars and values (only if running with stats)
-        let (cpu_bar, cpu_val, mem_bar, mem_val) = if let Some(stats) = &c.stats {
+        let (cpu_bar, cpu_val, mem_bar, mem_val, gpu_val) = if let Some(stats) = &c.stats {
             let cpu_bar = make_bar(stats.cpu_percent, 8);
             let cpu_val = format!("{:>5.1}%", stats.cpu_percent);
             let mem_bar = make_bar(stats.memory_percent, 8);
             let mem_val = format!("{:>5.1}%", stats.memory_percent);
-            (cpu_bar, cpu_val, mem_bar, mem_val)
+            // GPU VRAM usage
+            let gpu_val = match stats.vram_usage_mb {
+                Some(vram) if vram >= 1024.0 => format!("{:.1}G", vram / 1024.0),
+                Some(vram) => format!("{:.0}M", vram),
+                None => "─".to_string(),
+            };
+            (cpu_bar, cpu_val, mem_bar, mem_val, gpu_val)
         } else if c.status.is_running() {
             ("        ".to_string(), "  ... ".to_string(),
-             "        ".to_string(), "  ... ".to_string())
+             "        ".to_string(), "  ... ".to_string(), "─".to_string())
         } else {
             ("────────".to_string(), "   -  ".to_string(),
-             "────────".to_string(), "   -  ".to_string())
+             "────────".to_string(), "   -  ".to_string(), "─".to_string())
         };
 
         let cpu_color = percent_color(c.stats.as_ref().map(|s| s.cpu_percent).unwrap_or(0.0));
         let mem_color = percent_color(c.stats.as_ref().map(|s| s.memory_percent).unwrap_or(0.0));
+        let gpu_color = if c.stats.as_ref().and_then(|s| s.vram_usage_mb).is_some() {
+            Theme::GREEN
+        } else {
+            Theme::FG_DARK
+        };
 
-        Line::from(vec![
-            Span::styled(format!(" {} ", icon), Style::default().fg(status_color(&c.status))),
-            Span::styled(format!("{:<20}", truncate_name(&c.name, 20)), Style::default().fg(Theme::CYAN).add_modifier(Modifier::BOLD)),
-            Span::styled(format!(" {:>3} ", type_indicator), Style::default().fg(Theme::FG_DARK)),
-            Span::styled(format!("{:<14}", truncate_name(&port_str, 14)), Style::default().fg(Theme::YELLOW)),
-            Span::styled(" CPU ", Style::default().fg(Theme::FG_DARK)),
-            Span::styled(cpu_bar, Style::default().fg(Theme::CYAN)),
-            Span::styled(cpu_val, Style::default().fg(cpu_color)),
-            Span::styled(" MEM ", Style::default().fg(Theme::FG_DARK)),
-            Span::styled(mem_bar, Style::default().fg(Theme::MAGENTA)),
-            Span::styled(mem_val, Style::default().fg(mem_color)),
-        ])
+        if grouped {
+            // In grouped mode: show indent, no project column (project shown in header)
+            Line::from(vec![
+                Span::styled("  ", Style::default()), // Indent for group hierarchy
+                Span::styled(format!(" {} ", icon), Style::default().fg(status_color(&c.status))),
+                Span::styled(format!("{:<20}", truncate_name(&c.name, 20)), Style::default().fg(Theme::CYAN).add_modifier(Modifier::BOLD)),
+                Span::styled(format!("{:<12}", truncate_name(&port_str, 12)), Style::default().fg(Theme::YELLOW)),
+                Span::styled(" CPU ", Style::default().fg(Theme::FG_DARK)),
+                Span::styled(cpu_bar, Style::default().fg(Theme::CYAN)),
+                Span::styled(cpu_val, Style::default().fg(cpu_color)),
+                Span::styled(" MEM ", Style::default().fg(Theme::FG_DARK)),
+                Span::styled(mem_bar, Style::default().fg(Theme::MAGENTA)),
+                Span::styled(mem_val, Style::default().fg(mem_color)),
+                Span::styled(" GPU ", Style::default().fg(Theme::FG_DARK)),
+                Span::styled(format!("{:>5}", gpu_val), Style::default().fg(gpu_color)),
+            ])
+        } else {
+            // Normal mode: show project column
+            let project_str = c.compose_project.as_ref()
+                .map(|p| truncate_name(p, 8))
+                .unwrap_or_else(|| "─".to_string());
+
+            Line::from(vec![
+                Span::styled(format!(" {} ", icon), Style::default().fg(status_color(&c.status))),
+                Span::styled(format!("{:<18}", truncate_name(&c.name, 18)), Style::default().fg(Theme::CYAN).add_modifier(Modifier::BOLD)),
+                Span::styled(format!(" {:<8} ", project_str), Style::default().fg(Theme::LAVENDER)),
+                Span::styled(format!("{:<10}", truncate_name(&port_str, 10)), Style::default().fg(Theme::YELLOW)),
+                Span::styled(" CPU ", Style::default().fg(Theme::FG_DARK)),
+                Span::styled(cpu_bar, Style::default().fg(Theme::CYAN)),
+                Span::styled(cpu_val, Style::default().fg(cpu_color)),
+                Span::styled(" MEM ", Style::default().fg(Theme::FG_DARK)),
+                Span::styled(mem_bar, Style::default().fg(Theme::MAGENTA)),
+                Span::styled(mem_val, Style::default().fg(mem_color)),
+                Span::styled(" GPU ", Style::default().fg(Theme::FG_DARK)),
+                Span::styled(format!("{:>5}", gpu_val), Style::default().fg(gpu_color)),
+            ])
+        }
     }
 
     /// Render Network view line: Name, ↓RX rate, ↑TX rate, Total RX, Total TX
@@ -209,18 +396,20 @@ impl ContainerList {
         ])
     }
 
-    /// Render Details view line: Name, Image, Container ID, Uptime
+    /// Render Details view line: Name, Image, Project, Uptime
     fn render_details_line(&self, c: &ContainerInfo, icon: &str) -> Line<'static> {
-        let short_id = if c.id.len() >= 12 { &c.id[..12] } else { &c.id };
+        let project_str = c.compose_project.as_ref()
+            .map(|p| truncate_name(p, 12))
+            .unwrap_or_else(|| "─".to_string());
         let uptime = format_uptime(c.created);
 
         Line::from(vec![
             Span::styled(format!(" {} ", icon), Style::default().fg(status_color(&c.status))),
             Span::styled(format!("{:<20}", truncate_name(&c.name, 20)), Style::default().fg(Theme::CYAN).add_modifier(Modifier::BOLD)),
             Span::styled(" Image: ", Style::default().fg(Theme::FG_DARK)),
-            Span::styled(format!("{:<24}", truncate_name(&c.image, 24)), Style::default().fg(Theme::LAVENDER)),
-            Span::styled(" ID: ", Style::default().fg(Theme::FG_DARK)),
-            Span::styled(short_id.to_string(), Style::default().fg(Theme::OVERLAY)),
+            Span::styled(format!("{:<20}", truncate_name(&c.image, 20)), Style::default().fg(Theme::LAVENDER)),
+            Span::styled(" Project: ", Style::default().fg(Theme::FG_DARK)),
+            Span::styled(format!("{:<12}", project_str), Style::default().fg(Theme::TEAL)),
             Span::styled(" Up: ", Style::default().fg(Theme::FG_DARK)),
             Span::styled(format!("{:>12}", uptime), Style::default().fg(Theme::SKY)),
         ])
@@ -279,6 +468,17 @@ fn truncate_name(name: &str, max_len: usize) -> String {
 impl Default for ContainerList {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl ContainerList {
+    /// Get the item count for navigation (includes headers in groups mode)
+    pub fn item_count(&self) -> usize {
+        if self.item_to_container.is_empty() {
+            0
+        } else {
+            self.item_to_container.len()
+        }
     }
 }
 

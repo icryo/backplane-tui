@@ -10,7 +10,7 @@ pub struct HelpModal;
 
 impl HelpModal {
     pub fn render(frame: &mut Frame, area: Rect) {
-        let modal_area = centered_modal(area, 60, 22);
+        let modal_area = centered_modal(area, 60, 24);
 
         // Clear the background
         frame.render_widget(Clear, modal_area);
@@ -35,8 +35,16 @@ impl HelpModal {
                 Span::raw("Go to bottom"),
             ]),
             Line::from(vec![
+                Span::styled("  ←/→    ", Style::default().fg(Color::Yellow)),
+                Span::raw("Switch view (Stats/Network/Details)"),
+            ]),
+            Line::from(vec![
+                Span::styled("  f      ", Style::default().fg(Color::Yellow)),
+                Span::raw("Filter (All/Groups/Running/Stopped)"),
+            ]),
+            Line::from(vec![
                 Span::styled("  /      ", Style::default().fg(Color::Yellow)),
-                Span::raw("Filter containers"),
+                Span::raw("Filter by name"),
             ]),
             Line::from(vec![
                 Span::styled("  Enter/l", Style::default().fg(Color::Yellow)),

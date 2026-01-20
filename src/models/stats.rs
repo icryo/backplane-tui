@@ -13,6 +13,8 @@ pub struct ContainerStats {
     // Network I/O rates (bytes per second, calculated from delta)
     pub net_rx_rate: f64,
     pub net_tx_rate: f64,
+    // GPU VRAM usage (if container is using GPU)
+    pub vram_usage_mb: Option<f64>,
 }
 
 /// System-wide statistics

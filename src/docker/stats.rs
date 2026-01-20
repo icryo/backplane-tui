@@ -60,6 +60,7 @@ pub async fn get_container_stats(docker: &Docker, container_name: &str) -> Resul
             net_tx_bytes,
             net_rx_rate: 0.0, // Rate calculated separately
             net_tx_rate: 0.0,
+            vram_usage_mb: None, // Set by app from GPU metrics
         })
     } else {
         Ok(ContainerStats::default())

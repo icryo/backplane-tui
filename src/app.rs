@@ -1,5 +1,6 @@
 use anyhow::Result;
 use sysinfo::{Disks, System};
+use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use crate::action::Action;
@@ -10,6 +11,7 @@ use crate::components::{
 };
 use crate::components::confirm_modal::ConfirmAction;
 use crate::docker::client::DockerClient;
+use crate::docker::gpu::get_container_gpu_usage;
 use crate::docker::logs::get_container_logs;
 use crate::docker::stats::get_container_stats;
 use crate::effects::EffectManager;
@@ -38,6 +40,38 @@ pub enum ListViewMode {
     Details,  // Name, Image, Container ID, Uptime
 }
 
+/// Quick status filter for container list
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum StatusFilter {
+    #[default]
+    All,      // Show all containers
+    Groups,   // Show all, grouped by compose project with headers
+    Running,  // Only running containers
+    Stopped,  // Exited, dead, created (not running)
+}
+
+impl StatusFilter {
+    /// Cycle to the next filter state
+    pub fn cycle(&self) -> Self {
+        match self {
+            StatusFilter::All => StatusFilter::Groups,
+            StatusFilter::Groups => StatusFilter::Running,
+            StatusFilter::Running => StatusFilter::Stopped,
+            StatusFilter::Stopped => StatusFilter::All,
+        }
+    }
+
+    /// Get display name for the filter
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            StatusFilter::All => "All",
+            StatusFilter::Groups => "Groups",
+            StatusFilter::Running => "Running",
+            StatusFilter::Stopped => "Stopped",
+        }
+    }
+}
+
 /// Active modal state
 #[derive(Debug, Clone)]
 pub enum ModalState {
@@ -57,6 +91,9 @@ pub struct App {
     pub modal: ModalState,
     pub should_quit: bool,
     pub loading: bool,
+
+    // Status filter (quick toggle with 'f')
+    pub status_filter: StatusFilter,
 
     // Container data (auto-discovered)
     pub containers: Vec<ContainerInfo>,
@@ -108,6 +145,8 @@ pub struct App {
     vram_refresh_interval: Duration,
     logs_refresh_interval: Duration,
     cached_vram: Option<f32>,
+    /// Cached per-container GPU usage (container_id -> VRAM MB)
+    cached_container_gpu: std::collections::HashMap<String, f64>,
 
     // Visual effects
     pub effects: EffectManager,
@@ -127,6 +166,7 @@ impl App {
             modal: ModalState::None,
             should_quit: false,
             loading: false,
+            status_filter: StatusFilter::All,
             containers: Vec::new(),
             filtered_indices: Vec::new(),
             logs: Vec::new(),
@@ -149,25 +189,38 @@ impl App {
             last_logs_refresh: Instant::now() - Duration::from_secs(10),
             container_refresh_interval: Duration::from_secs(3),
             stats_refresh_interval: Duration::from_secs(2),
-            vram_refresh_interval: Duration::from_secs(2),
+            vram_refresh_interval: Duration::from_secs(5),
             logs_refresh_interval: Duration::from_secs(2),
             cached_vram: None,
+            cached_container_gpu: HashMap::new(),
             effects: EffectManager::new(),
         };
 
-        app.refresh_containers().await?;
+        // Refresh system stats FIRST to populate GPU cache
         app.refresh_system_stats();
+        app.refresh_containers().await?;
         app.update_filtered_indices();
 
         Ok(app)
     }
 
-    /// Update filtered indices based on current filter
+    /// Update filtered indices based on current filter and status filter
     pub fn update_filtered_indices(&mut self) {
         self.filtered_indices = self.containers
             .iter()
             .enumerate()
-            .filter(|(_, c)| self.filter.matches(&c.name))
+            .filter(|(_, c)| {
+                // Text filter
+                if !self.filter.matches(&c.name) {
+                    return false;
+                }
+                // Status filter
+                match self.status_filter {
+                    StatusFilter::All | StatusFilter::Groups => true,
+                    StatusFilter::Running => c.status.is_running(),
+                    StatusFilter::Stopped => !c.status.is_running(),
+                }
+            })
             .map(|(i, _)| i)
             .collect();
 
@@ -199,12 +252,18 @@ impl App {
 
         let mut containers = self.docker.list_containers().await?;
 
+        // Clone GPU cache to avoid borrow conflict
+        let gpu_cache = self.cached_container_gpu.clone();
+
         for container in &mut containers {
-            if container.status.is_running() {
-                if let Ok(stats) = get_container_stats(self.docker.inner(), &container.name).await {
+            // Use is_active() to include paused containers (they still hold GPU memory)
+            if container.status.is_active() {
+                if let Ok(mut stats) = get_container_stats(self.docker.inner(), &container.name).await {
                     // Record history for sparklines
                     self.stats_history.record_cpu(&container.name, stats.cpu_percent);
                     self.stats_history.record_mem(&container.name, stats.memory_percent);
+                    // Apply GPU usage if available
+                    stats.vram_usage_mb = lookup_container_vram(&gpu_cache, &container.id);
                     container.stats = Some(stats);
                 }
             }
@@ -220,12 +279,18 @@ impl App {
     pub async fn refresh_container_stats(&mut self) -> Result<()> {
         self.last_stats_refresh = Instant::now();
 
+        // Clone GPU cache to avoid borrow conflict
+        let gpu_cache = self.cached_container_gpu.clone();
+
         for container in &mut self.containers {
-            if container.status.is_running() {
-                if let Ok(stats) = get_container_stats(self.docker.inner(), &container.name).await {
+            // Use is_active() to include paused containers (they still hold GPU memory)
+            if container.status.is_active() {
+                if let Ok(mut stats) = get_container_stats(self.docker.inner(), &container.name).await {
                     // Record history for sparklines
                     self.stats_history.record_cpu(&container.name, stats.cpu_percent);
                     self.stats_history.record_mem(&container.name, stats.memory_percent);
+                    // Apply GPU usage if available
+                    stats.vram_usage_mb = lookup_container_vram(&gpu_cache, &container.id);
                     container.stats = Some(stats);
                 }
             }
@@ -277,6 +342,8 @@ impl App {
         let vram_percent = if self.last_vram_refresh.elapsed() >= self.vram_refresh_interval {
             self.last_vram_refresh = Instant::now();
             self.cached_vram = SystemStats::get_vram_percent();
+            // Also refresh per-container GPU usage
+            self.cached_container_gpu = get_container_gpu_usage();
             self.cached_vram
         } else {
             self.cached_vram
@@ -362,14 +429,36 @@ impl App {
 
     /// Get the currently selected container from filtered list
     pub fn selected_container(&self) -> Option<&ContainerInfo> {
-        self.container_list
-            .selected()
-            .and_then(|i| self.filtered_indices.get(i))
-            .and_then(|&idx| self.containers.get(idx))
+        if self.status_filter == StatusFilter::Groups {
+            // In groups mode, use the container index mapping
+            self.container_list
+                .selected_container_index()
+                .and_then(|i| self.filtered_indices.get(i))
+                .and_then(|&idx| self.containers.get(idx))
+        } else {
+            self.container_list
+                .selected()
+                .and_then(|i| self.filtered_indices.get(i))
+                .and_then(|&idx| self.containers.get(idx))
+        }
     }
 
     pub fn selected_container_name(&self) -> Option<String> {
         self.selected_container().map(|c| c.name.clone())
+    }
+
+    /// Get the item count for navigation (includes headers in groups mode)
+    fn nav_item_count(&self) -> usize {
+        if self.status_filter == StatusFilter::Groups {
+            let list_count = self.container_list.item_count();
+            if list_count > 0 {
+                list_count
+            } else {
+                self.filtered_indices.len()
+            }
+        } else {
+            self.filtered_indices.len()
+        }
     }
 
     pub fn should_refresh_containers(&self) -> bool {
@@ -385,13 +474,14 @@ impl App {
             return Ok(());
         }
 
+        // Refresh system stats FIRST so GPU cache is populated before container stats
+        self.refresh_system_stats();
+
         if self.should_refresh_containers() {
             self.refresh_containers().await?;
         } else if self.should_refresh_stats() {
             self.refresh_container_stats().await?;
         }
-
-        self.refresh_system_stats();
 
         // Throttle log refreshes to every 2 seconds
         if self.view_mode == ViewMode::Logs && !self.logs_container.is_empty()
@@ -425,7 +515,7 @@ impl App {
 
             Action::Up => match self.view_mode {
                 ViewMode::List | ViewMode::Filter => {
-                    self.container_list.previous(self.filtered_indices.len())
+                    self.container_list.previous(self.nav_item_count())
                 }
                 ViewMode::Logs => self.logs_view.scroll_up(1),
                 ViewMode::Create => {
@@ -450,7 +540,7 @@ impl App {
 
             Action::Down => match self.view_mode {
                 ViewMode::List | ViewMode::Filter => {
-                    self.container_list.next(self.filtered_indices.len())
+                    self.container_list.next(self.nav_item_count())
                 }
                 ViewMode::Logs => self.logs_view.scroll_down(1, self.logs.len()),
                 ViewMode::Create => {
@@ -481,7 +571,7 @@ impl App {
 
             Action::Bottom => match self.view_mode {
                 ViewMode::List | ViewMode::Filter => {
-                    self.container_list.bottom(self.filtered_indices.len())
+                    self.container_list.bottom(self.nav_item_count())
                 }
                 ViewMode::Logs => self.logs_view.bottom(self.logs.len()),
                 _ => {}
@@ -600,6 +690,11 @@ impl App {
                 self.refresh_containers().await?;
             }
 
+            Action::CycleStatusFilter => {
+                self.status_filter = self.status_filter.cycle();
+                self.update_filtered_indices();
+            }
+
             Action::Tick => {
                 self.tick().await?;
             }
@@ -666,7 +761,8 @@ impl App {
 
                 // Container list (filtered) - full width with inline stats
                 let filtered: Vec<ContainerInfo> = self.filtered_containers().into_iter().cloned().collect();
-                self.container_list.render(frame, list_area, &filtered, self.list_view_mode);
+                let total_count = self.containers.len();
+                self.container_list.render(frame, list_area, &filtered, self.list_view_mode, self.status_filter, total_count);
 
                 // Filter bar
                 if let Some(filter_rect) = filter_area {
@@ -771,4 +867,21 @@ impl App {
 
         self.effects.process_status(elapsed, frame.buffer_mut(), body_area);
     }
+}
+
+/// Lookup VRAM usage for a container from cached GPU metrics
+fn lookup_container_vram(gpu_cache: &HashMap<String, f64>, container_id: &str) -> Option<f64> {
+    // Try exact match first
+    if let Some(&vram) = gpu_cache.get(container_id) {
+        return Some(vram);
+    }
+
+    // Try prefix match (container IDs can be truncated)
+    for (id, &vram) in gpu_cache {
+        if id.starts_with(container_id) || container_id.starts_with(id) {
+            return Some(vram);
+        }
+    }
+
+    None
 }

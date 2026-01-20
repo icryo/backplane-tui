@@ -39,6 +39,7 @@ pub enum Action {
     Refresh,
     Quit,
     Tick, // Timer tick for stats refresh
+    CycleStatusFilter, // Cycle through All/Running/Stopped
 
     // No action
     None,

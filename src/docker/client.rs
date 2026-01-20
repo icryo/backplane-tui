@@ -89,6 +89,12 @@ impl DockerClient {
             let has_exposed_ports = ports.iter().any(|p| p.host_port.is_some());
             let is_cli = !has_exposed_ports;
 
+            // Extract compose project from labels
+            let compose_project = container
+                .labels
+                .as_ref()
+                .and_then(|labels| labels.get("com.docker.compose.project").cloned());
+
             result.push(ContainerInfo {
                 id: container.id.unwrap_or_default(),
                 name,
@@ -99,11 +105,19 @@ impl DockerClient {
                 ports,
                 stats: None,
                 created: container.created,
+                compose_project,
             });
         }
 
-        // Sort by name
-        result.sort_by(|a, b| a.name.cmp(&b.name));
+        // Sort by compose project (None last), then by name within each project
+        result.sort_by(|a, b| {
+            match (&a.compose_project, &b.compose_project) {
+                (Some(pa), Some(pb)) => pa.cmp(pb).then_with(|| a.name.cmp(&b.name)),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => a.name.cmp(&b.name),
+            }
+        });
 
         Ok(result)
     }
