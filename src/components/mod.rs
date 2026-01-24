@@ -13,6 +13,7 @@ pub mod info_modal;
 pub mod rename_modal;
 pub mod processes_modal;
 pub mod copy_files_modal;
+pub mod claude_dashboard;
 
 pub use container_list::ContainerList;
 pub use logs_view::LogsView;
@@ -28,3 +29,4 @@ pub use info_modal::InfoModal;
 pub use rename_modal::RenameModal;
 pub use processes_modal::ProcessesModal;
 pub use copy_files_modal::CopyFilesModal;
+pub use claude_dashboard::ClaudeDashboard;

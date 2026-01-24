@@ -4,12 +4,14 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use crate::action::Action;
+use crate::claude::{analyze_sessions, find_claude_data_path, load_usage_entries};
 use crate::components::{
-    ConfirmModal, ContainerList, CopyFilesModal, CreateContainerForm, CreateModal,
+    ClaudeDashboard, ConfirmModal, ContainerList, CopyFilesModal, CreateContainerForm, CreateModal,
     CreateMode, ExecModal, FilterBar, Header, HelpModal, InfoModal, LogsView,
     ProcessesModal, RenameModal, StatsHistory, StatusBar,
 };
 use crate::components::confirm_modal::ConfirmAction;
+use crate::components::claude_dashboard::resume_session;
 use crate::docker::client::DockerClient;
 use crate::docker::gpu::get_container_gpu_usage;
 use crate::docker::logs::get_container_logs;
@@ -29,6 +31,7 @@ pub enum ViewMode {
     Rename,
     Processes,
     CopyFiles,
+    ClaudeDashboard,
 }
 
 /// Container list view modes (horizontal scroll)
@@ -150,6 +153,12 @@ pub struct App {
 
     // Visual effects
     pub effects: EffectManager,
+
+    // Claude dashboard
+    pub claude_dashboard: ClaudeDashboard,
+    claude_data_path: Option<std::path::PathBuf>,
+    last_claude_refresh: Instant,
+    claude_refresh_interval: Duration,
 }
 
 impl App {
@@ -194,6 +203,10 @@ impl App {
             cached_vram: None,
             cached_container_gpu: HashMap::new(),
             effects: EffectManager::new(),
+            claude_dashboard: ClaudeDashboard::new(),
+            claude_data_path: find_claude_data_path(),
+            last_claude_refresh: Instant::now() - Duration::from_secs(60),
+            claude_refresh_interval: Duration::from_secs(10),
         };
 
         // Refresh system stats FIRST to populate GPU cache
@@ -361,6 +374,19 @@ impl App {
         };
     }
 
+    /// Refresh Claude sessions from JSONL files
+    pub fn refresh_claude_sessions(&mut self) {
+        self.last_claude_refresh = Instant::now();
+
+        if let Some(ref data_path) = self.claude_data_path {
+            // Load 720 hours (30 days) of session data
+            if let Ok(entries) = load_usage_entries(data_path, 720) {
+                let sessions = analyze_sessions(entries);
+                self.claude_dashboard.update_sessions(sessions);
+            }
+        }
+    }
+
     pub async fn load_logs(&mut self, container_name: &str) -> Result<()> {
         self.logs_container = container_name.to_string();
         self.logs = get_container_logs(self.docker.inner(), container_name, 500).await?;
@@ -477,6 +503,14 @@ impl App {
         // Refresh system stats FIRST so GPU cache is populated before container stats
         self.refresh_system_stats();
 
+        // Claude dashboard refresh
+        if self.view_mode == ViewMode::ClaudeDashboard {
+            if self.last_claude_refresh.elapsed() >= self.claude_refresh_interval {
+                self.refresh_claude_sessions();
+            }
+            return Ok(());
+        }
+
         if self.should_refresh_containers() {
             self.refresh_containers().await?;
         } else if self.should_refresh_stats() {
@@ -517,6 +551,9 @@ impl App {
                 ViewMode::List | ViewMode::Filter => {
                     self.container_list.previous(self.nav_item_count())
                 }
+                ViewMode::ClaudeDashboard => {
+                    self.claude_dashboard.select_prev();
+                }
                 ViewMode::Logs => self.logs_view.scroll_up(1),
                 ViewMode::Create => {
                     if self.create_form.mode == CreateMode::ImageSelect {
@@ -541,6 +578,9 @@ impl App {
             Action::Down => match self.view_mode {
                 ViewMode::List | ViewMode::Filter => {
                     self.container_list.next(self.nav_item_count())
+                }
+                ViewMode::ClaudeDashboard => {
+                    self.claude_dashboard.select_next();
                 }
                 ViewMode::Logs => self.logs_view.scroll_down(1, self.logs.len()),
                 ViewMode::Create => {
@@ -695,6 +735,30 @@ impl App {
                 self.update_filtered_indices();
             }
 
+            Action::ToggleClaudeDashboard => {
+                if self.view_mode == ViewMode::ClaudeDashboard {
+                    self.view_mode = ViewMode::List;
+                } else {
+                    self.view_mode = ViewMode::ClaudeDashboard;
+                    // Refresh sessions if stale
+                    if self.last_claude_refresh.elapsed() >= self.claude_refresh_interval {
+                        self.refresh_claude_sessions();
+                    }
+                }
+            }
+
+            Action::RefreshClaudeSessions => {
+                self.refresh_claude_sessions();
+            }
+
+            Action::ResumeClaudeSession => {
+                if let Some(session) = self.claude_dashboard.selected_session() {
+                    let session_id = session.session_id.clone();
+                    let path = session.display_name().to_string();
+                    resume_session(&session_id, &path);
+                }
+            }
+
             Action::Tick => {
                 self.tick().await?;
             }
@@ -774,6 +838,10 @@ impl App {
                 self.logs_view.focused = true;
                 self.logs_view.render(frame, body, &self.logs, &self.logs_container);
             }
+            ViewMode::ClaudeDashboard => {
+                // Claude sessions dashboard
+                self.claude_dashboard.render(frame, body);
+            }
         }
 
         // Footer/Status bar
@@ -784,6 +852,7 @@ impl App {
             ViewMode::Filter => "filter",
             ViewMode::Exec => "exec",
             ViewMode::Info => "info",
+            ViewMode::ClaudeDashboard => "claude",
             ViewMode::Rename => "rename",
             ViewMode::Processes => "processes",
             ViewMode::CopyFiles => "copy",

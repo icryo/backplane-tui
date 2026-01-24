@@ -40,6 +40,11 @@ pub enum Action {
     Quit,
     Tick, // Timer tick for stats refresh
     CycleStatusFilter, // Cycle through All/Running/Stopped
+    ToggleClaudeDashboard, // TAB to switch between containers and claude
+
+    // Claude dashboard
+    RefreshClaudeSessions,
+    ResumeClaudeSession,
 
     // No action
     None,

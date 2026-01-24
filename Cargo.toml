@@ -4,6 +4,19 @@ version = "0.1.0"
 edition = "2021"
 authors = ["221B Lab"]
 description = "Docker container management TUI"
+default-run = "backplane-tui"
+
+[lib]
+name = "backplane_tui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "backplane-tui"
+path = "src/main.rs"
+
+[[bin]]
+name = "test_sessions"
+path = "src/bin/test_sessions.rs"
 
 [dependencies]
 # TUI Framework
@@ -21,7 +34,12 @@ bollard = "0.18"
 
 # Configuration & Serialization
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 serde_yaml = "0.9"
+
+# File utilities
+glob = "0.3"
+dirs = "5"
 
 # System Information
 sysinfo = "0.32"

@@ -2,6 +2,7 @@
 
 mod action;
 mod app;
+mod claude;
 mod components;
 mod config;
 mod docker;
@@ -74,6 +75,9 @@ async fn main() -> Result<()> {
                     ViewMode::CopyFiles => {
                         handle_copy_mode(&mut app, key).await?;
                     }
+                    ViewMode::ClaudeDashboard => {
+                        handle_claude_dashboard_mode(&mut app, key).await?;
+                    }
                     _ => {
                         // Special handling for 'n' to open create form
                         if key.code == KeyCode::Char('n') && app.view_mode == ViewMode::List && matches!(app.modal, ModalState::None) {
@@ -92,6 +96,9 @@ async fn main() -> Result<()> {
                         } else if key.code == KeyCode::Char('i') && app.view_mode == ViewMode::List && matches!(app.modal, ModalState::None) {
                             // Open info modal (network I/O)
                             app.view_mode = ViewMode::Info;
+                        } else if key.code == KeyCode::Tab && matches!(app.modal, ModalState::None) {
+                            // Toggle claude dashboard
+                            app.handle_action(Action::ToggleClaudeDashboard).await?;
                         } else {
                             let action = handle_key_event(&app, key);
                             app.handle_action(action).await?;
@@ -289,7 +296,8 @@ fn handle_key_event(app: &App, key: event::KeyEvent) -> Action {
         ViewMode::List => handle_list_key(app, key),
         ViewMode::Logs => handle_logs_key(key),
         ViewMode::Create | ViewMode::Filter | ViewMode::Exec | ViewMode::Info
-        | ViewMode::Rename | ViewMode::Processes | ViewMode::CopyFiles => Action::None, // Handled separately
+        | ViewMode::Rename | ViewMode::Processes | ViewMode::CopyFiles
+        | ViewMode::ClaudeDashboard => Action::None, // Handled separately
     }
 }
 
@@ -536,6 +544,38 @@ async fn handle_copy_mode(app: &mut App, key: event::KeyEvent) -> Result<()> {
             if let Some(ref mut modal) = app.copy_modal {
                 modal.handle_char(c);
             }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Handle keys in Claude dashboard mode
+async fn handle_claude_dashboard_mode(app: &mut App, key: event::KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Tab | KeyCode::Esc => {
+            // Return to container list
+            app.handle_action(Action::ToggleClaudeDashboard).await?;
+        }
+        KeyCode::Char('q') => {
+            app.should_quit = true;
+        }
+        KeyCode::Char('j') | KeyCode::Down => {
+            app.handle_action(Action::Down).await?;
+        }
+        KeyCode::Char('k') | KeyCode::Up => {
+            app.handle_action(Action::Up).await?;
+        }
+        KeyCode::Char('r') => {
+            // Refresh sessions
+            app.handle_action(Action::RefreshClaudeSessions).await?;
+        }
+        KeyCode::Char('e') | KeyCode::Enter => {
+            // Resume selected session in tmux
+            app.handle_action(Action::ResumeClaudeSession).await?;
+        }
+        KeyCode::Char('?') => {
+            app.handle_action(Action::ShowHelp).await?;
         }
         _ => {}
     }
